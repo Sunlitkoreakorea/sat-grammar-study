@@ -9,10 +9,10 @@
 
   var $ = function (s, el) { return (el || document).querySelector(s); };
   var KEY = 'sat-grammar-progress-v1';
-  var st = { read: {}, quiz: {}, item: {}, last: null };
+  var st = { read: {}, quiz: {}, item: {}, last: null, shuffle: false };
   try {
     var raw = localStorage.getItem(KEY);
-    if (raw) { var o = JSON.parse(raw); st.read = o.read || {}; st.quiz = o.quiz || {}; st.item = o.item || {}; st.last = o.last || null; }
+    if (raw) { var o = JSON.parse(raw); st.read = o.read || {}; st.quiz = o.quiz || {}; st.item = o.item || {}; st.last = o.last || null; st.shuffle = !!o.shuffle; }
   } catch (e) { /* storage unavailable: run without persistence */ }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) { /* ignore */ } }
 
@@ -127,6 +127,7 @@
       '<div class="total-txt">전체 ' + all.done + ' / ' + all.total + ' 단계 · ' + all.pct + '%</div></div>';
     h += '<ul class="nav-list">';
     h += '<li><a class="nav-item' + (activeId === 'home' ? ' active' : '') + '" href="#/"><span class="nav-badge">⌂</span><span class="nav-txt"><b>홈</b><small>전체 진행 현황</small></span></a></li>';
+    h += '<li><a class="nav-item' + (activeId === 'practice' ? ' active' : '') + '" href="#/practice"><span class="nav-badge">✎</span><span class="nav-txt"><b>문제만 풀기</b><small>레슨별 문제 모음</small></span></a></li>';
     h += '<li><a class="nav-item' + (activeId === 'wrong' ? ' active' : '') + '" href="#/wrong"><span class="nav-badge">✗</span><span class="nav-txt"><b>오답노트</b><small>틀린 문제 모아 풀기</small></span>' +
       (wc ? '<span class="pill-count">' + wc + '</span>' : '') + '</a></li>';
     h += '<li class="nav-sep">Chapters</li>';
@@ -258,6 +259,8 @@
       h += '<div class="card cont-card"><div><div class="ch-no">처음이라면</div><b>' + esc(chapters[0].title) + '부터 시작해요</b></div>' +
         '<a class="btn primary" href="#/c/' + chapters[0].id + '">시작하기 →</a></div>';
     }
+    h += '<div class="card cont-card"><div><div class="ch-no">개념 없이 문제만</div><b>레슨별 문제만 바로 풀 수 있어요</b></div>' +
+      '<a class="btn" href="#/practice">문제만 풀기 →</a></div>';
     h += '<h3 style="margin:22px 0 10px">챕터</h3><div class="grid">';
     chapters.forEach(function (ch) {
       var p = chProgress(ch);
@@ -357,8 +360,93 @@
   }
 
   function startRun(items, meta) {
-    run = { items: items, i: 0, res: [], phase: 'q', revealed: false, meta: meta || {} };
+    run = { items: items, i: 0, res: [], phase: 'q', revealed: false, meta: meta || {}, instrOpen: {} };
     renderRun();
+  }
+
+  /* ───────────── practice-only space (문제만 풀기) ───────────── */
+  function quizParts(ch) { return ch.parts.filter(function (p) { return p.kind === 'quiz'; }); }
+  function lessonStats(ch) {
+    var n = 0, good = 0, bad = 0;
+    quizParts(ch).forEach(function (p) {
+      p.items.forEach(function (it, i) {
+        n++;
+        var v = st.item[pkey(ch, p) + '#' + i];
+        if (v === 1) good++; else if (v === 0) bad++;
+      });
+    });
+    return { n: n, good: good, bad: bad, done: good + bad };
+  }
+  function shuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
+  function exampleHtml(p) {
+    if (!p.example) return '';
+    var ex = p.example;
+    return '<div class="q-example"><span class="tag">예시</span>' + ex.q + (ex.a ? ' <b>→ ' + esc(Array.isArray(ex.a) ? ex.a.join(' / ') : ex.a) + '</b>' : '') + '</div>';
+  }
+  function startPractice(ch, partIds, mode) {
+    var parts = quizParts(ch).filter(function (p) { return !partIds || partIds.indexOf(p.id) >= 0; });
+    var items = [];
+    parts.forEach(function (p) {
+      p.items.forEach(function (it, i) {
+        var key = pkey(ch, p) + '#' + i;
+        if (mode === 'wrong' && st.item[key] !== 0) return;
+        items.push({ q: it.q, a: it.a, why: it.why, reveal: it.reveal, idx: i, key: key, p: p, ch: ch });
+      });
+    });
+    if (!items.length) return;
+    if (st.shuffle) shuffle(items);
+    startRun(items, { full: false, label: '문제 풀기', practiceCh: ch.id, partIds: partIds, mode: mode, recordSets: mode === 'wrong' ? null : parts, activeSide: 'practice' });
+    window.scrollTo(0, 0);
+  }
+
+  function showPractice() {
+    run = null; runCtx = null;
+    setTitle('문제만 풀기');
+    renderSide('practice');
+    var list = chapters.filter(function (ch) { return quizParts(ch).length; });
+    var tn = 0, tg = 0, tb = 0;
+    list.forEach(function (ch) { var s = lessonStats(ch); tn += s.n; tg += s.good; tb += s.bad; });
+    var h = '<div class="wrap"><div class="home-hero"><h2>문제만 풀기</h2><p>개념 설명은 빼고, 레슨별 문제만 골라서 풀어요. 풀면 정답·오답이 기록되고 오답노트에도 모여요.</p></div>' +
+      '<div class="stat-row"><div class="stat"><b>' + (tg + tb) + ' / ' + tn + '</b><span>푼 문제 / 전체 문제</span></div>' +
+      '<div class="stat"><b>' + tg + '</b><span>정답</span></div><div class="stat"><b>' + tb + '</b><span>오답</span></div></div>' +
+      '<h3 style="margin:22px 0 10px">레슨을 고르세요</h3><div class="grid">';
+    list.forEach(function (ch) {
+      var s = lessonStats(ch);
+      h += '<a class="tile" href="#/practice/' + ch.id + '"><div class="t-no">LESSON ' + esc(ch.id.replace(/^L/, '')) + '</div><div class="t-ti">' + esc(chTitle(ch).replace(/^Lesson \d+\.\s*/, '')) + '</div>' +
+        '<div class="t-ko">' + esc(ch.ko || '') + '</div><div class="t-bar"><span style="width:' + (s.n ? Math.round(s.good / s.n * 100) : 0) + '%"></span></div>' +
+        '<div class="t-meta">문제 ' + s.n + ' · 정답 ' + s.good + (s.bad ? ' · 오답 ' + s.bad : '') + '</div></a>';
+    });
+    h += '</div></div>';
+    main.innerHTML = h;
+    toTop();
+  }
+
+  function showPracticeLesson(ch) {
+    run = null; runCtx = null;
+    setTitle('문제만 풀기 · ' + ch.no);
+    renderSide('practice');
+    var s = lessonStats(ch), qp = quizParts(ch);
+    var h = '<div class="wrap"><a class="back-link" href="#/practice">← 레슨 목록</a>' +
+      '<div class="ch-no" style="margin-top:10px">문제만 풀기 · LESSON ' + esc(ch.id.replace(/^L/, '')) + '</div><h2 class="ch-title">' + esc(chTitle(ch)) + '</h2>' +
+      '<p class="ch-sub">문제 ' + s.n + '개 · ' + qp.length + '세트' + (s.done ? ' · 정답 ' + s.good + ' / 오답 ' + s.bad : '') + '</p>';
+    h += '<div id="plist"><div class="card pr-main"><div class="pr-actions">' +
+      '<button class="btn primary big" data-act="pr-all" data-ch="' + ch.id + '">이 레슨 전체 풀기 · ' + s.n + '문제</button>' +
+      '<button class="btn" data-act="pr-wrong" data-ch="' + ch.id + '"' + (s.bad ? '' : ' disabled') + '>틀린 문제만 (' + s.bad + ')</button></div>' +
+      '<label class="switch"><input type="checkbox" id="shuffleSw"' + (st.shuffle ? ' checked' : '') + '><span class="track"></span><span class="sw-t">문제 순서 섞기</span></label></div>' +
+      '<div class="card pr-sets"><h3 class="pr-h">세트별로 풀기</h3>';
+    qp.forEach(function (p) {
+      var rec = st.quiz[pkey(ch, p)], bad = 0;
+      p.items.forEach(function (it, i) { if (st.item[pkey(ch, p) + '#' + i] === 0) bad++; });
+      h += '<div class="set-row"><div class="set-t"><b>' + p.title + '</b><small>' + p.items.length + '문제' +
+        (rec ? ' · 최근 ' + rec.last + '/' + rec.total + ' · 최고 ' + rec.best + '/' + rec.total : '') + (bad ? ' · 오답 ' + bad : '') + '</small></div>' +
+        '<button class="btn primary" data-act="pr-set" data-ch="' + ch.id + '" data-p="' + esc(p.id) + '">풀기</button></div>';
+    });
+    h += '</div></div><article class="card" id="qcard" hidden><div id="qarea"></div></article></div>';
+    main.innerHTML = h;
+    toTop();
   }
 
   function isRight(it, pick) {
@@ -373,10 +461,20 @@
     if (run.i >= run.items.length) return renderSummary();
     var it = run.items[run.i], p = it.p, n = run.items.length;
     var self = p.type === 'self';
-    var h = '<div class="q-meta"><span>' + (run.meta.label ? esc(run.meta.label) + ' · ' : '') + '문제 ' + (run.i + 1) + ' / ' + n + '</span>' +
+    showRunArea();
+    var h = '';
+    if (run.meta.practiceCh) h += '<div class="pr-top"><span class="best">' + esc(chTitle(it.ch)) + '</span><button class="btn ghost" data-act="pr-exit">나가기</button></div>';
+    h += '<div class="q-meta"><span>' + (run.meta.label ? esc(run.meta.label) + ' · ' : '') + '문제 ' + (run.i + 1) + ' / ' + n + '</span>' +
       '<span>' + run.res.filter(function (r) { return r.ok; }).length + ' 정답</span></div>' +
       '<div class="qbar"><span style="width:' + Math.round(run.i / n * 100) + '%"></span></div>';
     if (run.meta.label) h += '<div class="page-ref">' + esc(it.ch.no) + ' · ' + esc(p.title) + '</div>';
+    if (run.meta.practiceCh) {
+      // the set's instruction travels with the question: open on the first question of each set, then remembered
+      var ik = pkey(it.ch, p), first = run.i === 0 || run.items[run.i - 1].p !== p;
+      var isOpen = run.instrOpen[ik] !== undefined ? run.instrOpen[ik] : first;
+      h += '<details class="q-instr-d" data-ik="' + esc(ik) + '"' + (isOpen ? ' open' : '') + '><summary>이 세트의 지시문 · 예시</summary>' +
+        '<div class="q-instr"><div>' + pInstr(it.ch, p) + '</div></div>' + exampleHtml(p) + legendHtml(p) + '</details>';
+    }
     h += '<div class="qcard"><div class="qnum">' + (run.meta.showOrig ? (it.idx + 1) : (run.i + 1)) + '</div><div class="qtext">' + it.q + '</div></div>';
 
     if (self) {
@@ -418,9 +516,27 @@
     save();
   }
 
+  // practice pages keep the set list and the run side by side in the DOM; show only the run while one is active
+  function showRunArea() {
+    var qc = $('#qcard'), pl = $('#plist');
+    if (qc) qc.hidden = false;
+    if (pl) pl.hidden = true;
+  }
+
   function renderSummary() {
     var n = run.items.length, ok = run.res.filter(function (r) { return r && r.ok; }).length;
     var meta = run.meta;
+    showRunArea();
+    if (meta.recordSets) {
+      meta.recordSets.forEach(function (p) {
+        var cnt = 0, good = 0;
+        run.items.forEach(function (x, i) { if (x.p === p) { cnt++; if (run.res[i] && run.res[i].ok) good++; } });
+        if (cnt !== p.items.length) return;
+        var k0 = pkey(byId[meta.practiceCh], p), pv = st.quiz[k0];
+        st.quiz[k0] = { best: Math.max(pv ? pv.best : 0, good), total: cnt, last: good, at: Date.now() };
+      });
+      save();
+    }
     if (meta.full && runCtx) {
       var k = pkey(runCtx.ch, runCtx.p), prev = st.quiz[k];
       st.quiz[k] = { best: Math.max(prev ? prev.best : 0, ok), total: n, last: ok, at: Date.now() };
@@ -443,7 +559,8 @@
     var wrongs = run.items.filter(function (it, i) { return !(run.res[i] && run.res[i].ok); });
     if (wrongs.length) h += '<button class="btn" data-act="retry-wrong">틀린 문제만 다시 (' + wrongs.length + ')</button>';
     if (meta.full) h += '<button class="btn" data-act="quiz-restart">처음부터 다시</button>';
-    h += '<button class="btn primary" data-act="quiz-exit">' + (meta.full ? '문제 화면으로' : '오답노트로') + '</button></div>';
+    else if (meta.practiceCh) h += '<button class="btn" data-act="pr-again">처음부터 다시</button>';
+    h += '<button class="btn primary" data-act="quiz-exit">' + (meta.full ? '문제 화면으로' : meta.practiceCh ? '레슨 화면으로' : '오답노트로') + '</button></div>';
     $('#qarea').innerHTML = h;
   }
 
@@ -476,7 +593,13 @@
   }
 
   /* ───────────── events ───────────── */
+  main.addEventListener('change', function (e) {
+    if (e.target.id === 'shuffleSw') { st.shuffle = e.target.checked; save(); }
+  });
+
   main.addEventListener('click', function (e) {
+    var sm = e.target.closest('.q-instr-d > summary');
+    if (sm && run) { run.instrOpen[sm.parentNode.getAttribute('data-ik')] = !sm.parentNode.open; return; }  // remember the user's choice
     var t = e.target.closest('[data-act]');
     if (!t) { if (e.target.id === 'resetBtn') resetAll(); return; }
     var act = t.getAttribute('data-act');
@@ -494,10 +617,19 @@
       startRun(buildItems(runCtx.ch, runCtx.p, idx), { full: false, label: '틀린 문제', showOrig: true, activeSide: runCtx.ch.id });
     } else if (act === 'retry-wrong') {
       var again = run.items.filter(function (x, i) { return !(run.res[i] && run.res[i].ok); });
-      var meta = Object.assign({}, run.meta, { full: false, label: '틀린 문제', showOrig: true, activeSide: run.meta.activeSide || (runCtx && runCtx.ch.id) });
+      var meta = Object.assign({}, run.meta, { full: false, label: '틀린 문제', showOrig: true, recordSets: null, activeSide: run.meta.activeSide || (runCtx && runCtx.ch.id) });
       startRun(again, meta);
+    } else if (act === 'pr-all' || act === 'pr-wrong') {
+      startPractice(byId[t.getAttribute('data-ch')], null, act === 'pr-wrong' ? 'wrong' : 'all');
+    } else if (act === 'pr-set') {
+      startPractice(byId[t.getAttribute('data-ch')], [t.getAttribute('data-p')], 'all');
+    } else if (act === 'pr-again') {
+      startPractice(byId[run.meta.practiceCh], run.meta.partIds, run.meta.mode);
+    } else if (act === 'pr-exit') {
+      var pcid = run.meta.practiceCh; run = null; showPracticeLesson(byId[pcid]);
     } else if (act === 'quiz-exit') {
-      if (run.meta.full && runCtx) { run = null; renderQuizIntro(); }
+      if (run.meta.practiceCh) { var pc2 = run.meta.practiceCh; run = null; showPracticeLesson(byId[pc2]); }
+      else if (run.meta.full && runCtx) { run = null; renderQuizIntro(); }
       else if (runCtx) { run = null; renderQuizIntro(); }
       else { run = null; showWrong(); }
     } else if (act === 'pick' && run && it && !run.res[run.i]) {
@@ -541,7 +673,7 @@
 
   function resetAll() {
     if (!confirm('학습 기록(읽음 표시, 퀴즈 점수, 오답노트)을 모두 지울까요?')) return;
-    st = { read: {}, quiz: {}, item: {}, last: null };
+    st = { read: {}, quiz: {}, item: {}, last: null, shuffle: st.shuffle };
     save(); route();
   }
 
@@ -583,6 +715,10 @@
       return showChapter(ch, pi < 0 ? 0 : pi);
     }
     if (seg[0] === 'wrong') return showWrong();
+    if (seg[0] === 'practice') {
+      var pch = byId[seg[1]];
+      return pch && quizParts(pch).length ? showPracticeLesson(pch) : showPractice();
+    }
     showHome();
   }
   window.addEventListener('hashchange', route);

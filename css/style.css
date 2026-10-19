@@ -303,6 +303,38 @@ table.tbl { border-collapse: collapse; width: 100%; font-family: var(--serif); f
 
 .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
 
+/* ───────── practice-only space (문제만 풀기) ───────── */
+[hidden] { display: none !important; }
+.back-link { display: inline-block; color: var(--ink-2); text-decoration: none; font-size: 14px; padding: 4px 0; }
+.back-link:hover { color: var(--accent); }
+.pr-main { margin-top: 18px; }
+.pr-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn.big { min-height: 50px; padding: 12px 22px; font-size: 16px; flex: 1 1 260px; }
+.switch { display: inline-flex; align-items: center; gap: 10px; margin-top: 16px; cursor: pointer; user-select: none; position: relative; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track { position: relative; flex: none; width: 44px; height: 26px; border-radius: 99px; background: var(--line); transition: background .15s; }
+.switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .15s; }
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(18px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch .sw-t { font-size: 15px; font-weight: 600; }
+.pr-sets { margin-top: 14px; padding-top: 8px; padding-bottom: 8px; }
+.pr-h { margin: 8px 0 2px; font-size: 14px; color: var(--ink-2); }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
+.set-row:last-child { border-bottom: 0; }
+.set-t { min-width: 0; flex: 1; }
+.set-row .btn { flex: none; white-space: nowrap; min-width: 64px; }
+.set-t b { display: block; line-height: 1.35; }
+.set-t small { color: var(--muted); font-size: 13px; }
+.pr-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.pr-top .btn { min-height: 34px; padding: 4px 14px; font-size: 14px; }
+.q-instr-d { margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); padding: 2px 14px; }
+.q-instr-d > summary { cursor: pointer; padding: 9px 0; font-size: 14px; font-weight: 600; color: var(--accent); }
+.q-instr-d[open] > summary { border-bottom: 1px dashed var(--line); margin-bottom: 8px; }
+.q-instr-d .q-instr { margin: 0 0 8px; background: transparent; border: 0; padding: 0; }
+.q-instr-d .q-example { margin: 8px 0; }
+.q-instr-d .legend { margin: 6px 0 10px; }
+
 /* ───────── language toggle ───────── */
 .lang-toggle {
   position: fixed; top: 12px; right: 16px; z-index: 41;
