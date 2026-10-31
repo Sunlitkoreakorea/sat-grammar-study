@@ -449,6 +449,133 @@
     toTop();
   }
 
+  /* ───────────── interactive marking (Practice 1A/1B style) ───────────── */
+  var TOOLS = {
+    S: { name: '주어', how: '밑줄', cls: 'u' },
+    O: { name: '목적어', how: '취소선', cls: 's' },
+    V: { name: '동사', how: '동그라미', cls: 'v' }
+  };
+
+  // Read the annotated answer (<u> = subject, <s> = object, .circ = verb) into word tokens {t, e}.
+  function parseReveal(html) {
+    var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+    var tokens = [], cur = null;
+    function flush() { if (cur && cur.t) tokens.push(cur); cur = null; }
+    function walk(node, type) {
+      if (node.nodeType === 3) {
+        var s = node.nodeValue;
+        for (var k = 0; k < s.length; k++) {
+          var c = s.charAt(k);
+          if (/\s/.test(c)) { flush(); continue; }
+          if (!cur) cur = { t: '', e: '' };
+          cur.t += c;
+          if (!cur.e && type && /[A-Za-z0-9]/.test(c)) cur.e = type;   // the first letter decides a word's type
+        }
+      } else if (node.nodeType === 1) {
+        var tag = node.nodeName, t2 = type;
+        if (tag === 'U') t2 = 'S'; else if (tag === 'S') t2 = 'O'; else if (node.classList && node.classList.contains('circ')) t2 = 'V';
+        for (var c2 = node.firstChild; c2; c2 = c2.nextSibling) walk(c2, t2);
+      }
+    }
+    walk(doc.body.firstChild, '');
+    flush();
+    return tokens;
+  }
+  function toolsFor(p) {
+    if (p._tools) return p._tools;
+    var all = p.items.map(function (x) { return x.reveal || ''; }).join(' ') + (p.example ? p.example.q : '');
+    var t = ['S'];
+    if (/<s>/.test(all)) t.push('O');
+    if (/class="circ"/.test(all)) t.push('V');
+    return (p._tools = t);
+  }
+  function prepMarking(it) {
+    if (!it._tok) { try { it._tok = parseReveal(it.reveal || ''); } catch (e) { it._tok = []; } }
+    if (!it._tok.some(function (w) { return w.e; })) return false;
+    run.marks = run.marks || {};
+    var tl = toolsFor(it.p);
+    if (!run.tool || tl.indexOf(run.tool) < 0) run.tool = tl[0];
+    return true;
+  }
+
+  // Unit = run of consecutive words with the same expected type. Subjects/objects need at least one word marked
+  // (the book marks the whole noun phrase, students often mark the head); verbs need first and last word.
+  function gradeMarks(tokens, marks) {
+    var n = tokens.length, state = [], i, j, k, miss = 0, bad = 0, total = 0;
+    for (i = 0; i < n; i++) state[i] = '';
+    i = 0;
+    while (i < n) {
+      var e = tokens[i].e;
+      if (!e) { i++; continue; }
+      j = i; while (j + 1 < n && tokens[j + 1].e === e) j++;
+      total++;
+      var found = false;
+      if (e === 'V') found = marks[i] === 'V' && marks[j] === 'V';
+      else for (k = i; k <= j; k++) if (marks[k] === e) found = true;
+      for (k = i; k <= j; k++) {
+        if (marks[k] && marks[k] !== e) { state[k] = 'bad'; bad++; }
+        else if (marks[k] === e) state[k] = 'ok';
+        else if (!found) state[k] = 'miss';
+      }
+      if (!found) miss++;
+      i = j + 1;
+    }
+    for (i = 0; i < n; i++) {                       // marks on words that belong to no unit
+      if (tokens[i].e || !marks[i]) continue;
+      var T = marks[i], tol = false;
+      if (T !== 'V') {                              // "The 1844 election": marking the whole noun phrase is fine
+        j = i; while (j < n && !tokens[j].e && marks[j] === T) j++;
+        if (j < n && tokens[j].e === T && j - i <= 3) tol = true;
+      }
+      if (tol) state[i] = 'tol'; else { state[i] = 'bad'; bad++; }
+    }
+    return { ok: miss === 0 && bad === 0, miss: miss, bad: bad, total: total, state: state };
+  }
+
+  function tokensHtml(tokens, marks, g) {
+    var eff = tokens.map(function (w, i) {
+      var m = marks[i] || '', s = g ? g.state[i] : '';
+      if (g && s === 'miss') return { type: w.e, status: 'miss' };
+      return { type: m, status: g ? (s === 'bad' ? 'bad' : (s === 'ok' || s === 'tol') ? 'ok' : '') : '' };
+    });
+    return tokens.map(function (w, i) {
+      var x = eff[i], cl = 'w';
+      var joinPrev = i > 0 && x.type === 'V' && eff[i - 1].type === 'V' && eff[i - 1].status === x.status;
+      var joinNext = i < tokens.length - 1 && x.type === 'V' && eff[i + 1].type === 'V' && eff[i + 1].status === x.status;
+      if (x.type) cl += ' mk mk-' + x.type;
+      if (x.status) cl += ' is-' + x.status;
+      if (x.type === 'V') cl += (joinPrev ? '' : ' v-s') + (joinNext ? '' : ' v-e');
+      // the space between two joined circled words belongs to the first word so the circle stays unbroken
+      return '<span class="' + cl + '" data-act="mk" data-i="' + i + '">' + esc(w.t) + (joinNext ? ' ' : '') + '</span>' + (joinNext || i === tokens.length - 1 ? '' : ' ');
+    }).join('');
+  }
+
+  function markingHtml(it, p, marks, done, n) {
+    var nextBtn = '<button class="btn primary" data-act="next">' + (run.i + 1 >= n ? '결과 보기' : '다음 →') + '</button>';
+    var h = '';
+    if (!done) {
+      var tl = toolsFor(p);
+      h += '<div class="mk-hint">도구를 고르고 문장의 단어를 눌러 표시하세요. 같은 도구로 다시 누르면 지워져요.</div><div class="tools">' +
+        tl.map(function (k, ki) {
+          return '<button type="button" class="tool' + (run.tool === k ? ' on' : '') + '" data-act="tool" data-tool="' + k + '"><span class="sw ' + TOOLS[k].cls + '">abc</span>' +
+            TOOLS[k].name + ' · ' + TOOLS[k].how + '<kbd>' + (ki + 1) + '</kbd></button>';
+        }).join('') +
+        '<button type="button" class="tool' + (run.tool === 'E' ? ' on' : '') + '" data-act="tool" data-tool="E"><span class="sw">⌫</span>지우개</button>' +
+        '<button type="button" class="tool plain" data-act="mk-clear"' + (marks.some(Boolean) ? '' : ' disabled') + '>전체 지우기</button></div>';
+      h += '<div class="q-actions"><button class="btn ghost" data-act="mk-legacy">종이에 풀고 정답만 볼래요</button>' +
+        '<button class="btn primary" data-act="mk-grade"' + (marks.some(Boolean) ? '' : ' disabled') + '>채점하기</button></div>';
+      return h;
+    }
+    var g = done.g;
+    h += '<div class="mk-legend"><span class="lg ok">맞게 표시</span><span class="lg bad">잘못 표시</span><span class="lg miss">놓친 표시</span></div>';
+    var head = done.ok ? (done.overridden ? '정답으로 처리했어요' : '정답! 모두 찾았어요')
+      : '아쉬워요 — 총 ' + g.total + '개 중 ' + (g.total - g.miss) + '개 찾음' + (g.bad ? ' · 잘못 표시 ' + g.bad + '개' : '');
+    h += '<div class="feedback ' + (done.ok ? 'ok' : 'bad') + '"><div class="fb-h">' + head + '</div><div class="fb-reveal">' + it.reveal + '</div>' +
+      (it.why ? '<div class="fb-why">' + it.why + '</div>' : '') + '</div>';
+    h += '<div class="q-actions">' + (done.ok ? '' : '<button class="btn ghost" data-act="mk-override">내 답도 맞아요</button>') + nextBtn + '</div>';
+    return h;
+  }
+
   function isRight(it, pick) {
     var a = it.a;
     return Array.isArray(a) ? a.indexOf(pick) >= 0 : a === pick;
@@ -475,9 +602,16 @@
       h += '<details class="q-instr-d" data-ik="' + esc(ik) + '"' + (isOpen ? ' open' : '') + '><summary>이 세트의 지시문 · 예시</summary>' +
         '<div class="q-instr"><div>' + pInstr(it.ch, p) + '</div></div>' + exampleHtml(p) + legendHtml(p) + '</details>';
     }
-    h += '<div class="qcard"><div class="qnum">' + (run.meta.showOrig ? (it.idx + 1) : (run.i + 1)) + '</div><div class="qtext">' + it.q + '</div></div>';
+    // "mark it yourself" sets (underline / cross out / circle) are solved by tapping words, then graded automatically
+    var interactive = self && !(run.legacy && run.legacy[run.i]) && prepMarking(it);
+    var marks = interactive ? (run.marks[run.i] || (run.marks[run.i] = [])) : null;
+    var done = interactive ? run.res[run.i] : null;
+    h += '<div class="qcard"><div class="qnum">' + (run.meta.showOrig ? (it.idx + 1) : (run.i + 1)) + '</div><div class="qtext' + (interactive ? ' tok' + (done ? ' graded' : '') : '') + '">' +
+      (interactive ? tokensHtml(it._tok, marks, done && done.g) : it.q) + '</div></div>';
 
-    if (self) {
+    if (interactive) {
+      h += markingHtml(it, p, marks, done, n);
+    } else if (self) {
       if (run.phase === 'q') {
         h += '<div class="q-actions"><button class="btn primary" data-act="reveal">정답 보기</button></div>';
       } else {
@@ -637,6 +771,25 @@
       run.res[run.i] = { ok: ok, pick: pick };
       st.item[it.key] = ok ? 1 : 0; save();
       renderRun();
+    } else if (act === 'tool' && run) {
+      run.tool = t.getAttribute('data-tool'); renderRun();
+    } else if (act === 'mk' && run && it && run.marks && !run.res[run.i]) {
+      var mi = +t.getAttribute('data-i'), mm = run.marks[run.i] || (run.marks[run.i] = []);
+      mm[mi] = (run.tool === 'E' || mm[mi] === run.tool) ? '' : run.tool;
+      renderRun();
+    } else if (act === 'mk-clear' && run && run.marks) {
+      run.marks[run.i] = []; renderRun();
+    } else if (act === 'mk-grade' && run && it && it._tok) {
+      var gm = gradeMarks(it._tok, run.marks[run.i] || []);
+      run.res[run.i] = { ok: gm.ok, g: gm };
+      st.item[it.key] = gm.ok ? 1 : 0; save();
+      renderRun();
+    } else if (act === 'mk-override' && run && it && run.res[run.i]) {
+      run.res[run.i].ok = true; run.res[run.i].overridden = true;
+      st.item[it.key] = 1; save();
+      renderRun();
+    } else if (act === 'mk-legacy' && run) {
+      run.legacy = run.legacy || {}; run.legacy[run.i] = true; run.phase = 'q'; renderRun();
     } else if (act === 'reveal' && run) {
       run.phase = 'reveal'; renderRun();
     } else if (act === 'self' && run && it) {
@@ -661,6 +814,17 @@
     if (!run || e.metaKey || e.ctrlKey || e.altKey) return;
     var it = run.items[run.i];
     if (!it) return;
+    if (it.p.type === 'self' && it._tok && it._tok.length && !(run.legacy && run.legacy[run.i])) {   // interactive marking
+      if (!run.res[run.i] && /^[1-3]$/.test(e.key)) {
+        var tk = toolsFor(it.p)[+e.key - 1]; if (tk) { run.tool = tk; renderRun(); }
+      } else if (!run.res[run.i] && (e.key === 'Backspace' || e.key === 'e')) {
+        run.tool = 'E'; renderRun();
+      } else if (e.key === 'Enter') {
+        var ib = main.querySelector('[data-act="mk-grade"]:not([disabled])') || main.querySelector('[data-act="next"]');
+        if (ib) { e.preventDefault(); ib.click(); }
+      }
+      return;
+    }
     if (it.p.type !== 'self' && !run.res[run.i] && /^[1-9]$/.test(e.key)) {
       var o = (it.p.options || [])[+e.key - 1];
       if (o) { var b = main.querySelector('.opt[data-o="' + CSS.escape(o) + '"]'); if (b) b.click(); }
