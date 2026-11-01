@@ -376,6 +376,44 @@ table.tbl { border-collapse: collapse; width: 100%; font-family: var(--serif); f
 .mk-legend .lg.bad::before { border-top-color: var(--bad); }
 .mk-legend .lg.miss::before { border-top: 3px dashed #d9822b; }
 
+/* ───────── search ───────── */
+.sb-search { position: relative; margin: 2px 2px 10px; }
+.sb-search .ico { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.sb-search input {
+  width: 100%; height: 42px; padding: 0 36px 0 38px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel-2); color: var(--ink);
+  font: inherit; font-size: 14.5px; outline: none; -webkit-appearance: none; appearance: none;
+}
+.sb-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sb-search kbd {
+  position: absolute; right: 11px; top: 50%; transform: translateY(-50%);
+  font: 600 11px var(--sans); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; pointer-events: none;
+}
+.sb-search input:focus ~ kbd, .sb-search input:not(:placeholder-shown) ~ kbd { display: none; }
+.search-btn { display: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.sr-group { margin-top: 22px; }
+.sr-group h3 { margin: 0 0 8px; font-size: 15px; color: var(--ink-2); }
+.sr-group h3 span { font-weight: 400; color: var(--muted); margin-left: 4px; }
+.sr { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin: 8px 0; overflow: hidden; }
+.sr:hover { border-color: var(--accent); }
+.sr-link { display: block; padding: 12px 16px; text-decoration: none; color: inherit; }
+.sr-path { display: block; font-size: 12.5px; font-weight: 700; color: var(--accent); margin-bottom: 3px; }
+.sr-snip { display: block; font-family: var(--serif); font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.sr-d { border-top: 1px dashed var(--line); padding: 0 16px; }
+.sr-d summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); padding: 9px 0; }
+.sr-ans { padding: 0 0 12px; font-family: var(--serif); font-size: 15.5px; line-height: 1.6; }
+.sr-why { font: 14px/1.55 var(--sans); color: var(--ink-2); margin-top: 4px; }
+.sr-more { color: var(--muted); font-size: 13px; padding: 4px 2px; }
+mark.sh, .content mark.sh { background: var(--hl-o); color: inherit; border-radius: 3px; padding: 0 1px; }
+.blk.hit { border-radius: 10px; animation: hitflash 2.6s ease-out 1; }
+@keyframes hitflash {
+  0%, 35% { background: var(--hl); box-shadow: 0 0 0 6px var(--hl); }
+  100% { background: transparent; box-shadow: 0 0 0 6px transparent; }
+}
+
 /* ───────── language toggle ───────── */
 .lang-toggle {
   position: fixed; top: 12px; right: 16px; z-index: 41;
@@ -402,6 +440,14 @@ table.tbl { border-collapse: collapse; width: 100%; font-family: var(--serif); f
     border: 1px solid var(--line); background: var(--panel);
     font-size: 20px; box-shadow: var(--shadow);
   }
+  .search-btn {
+    display: grid; place-items: center;
+    position: fixed; top: 10px; left: 62px; z-index: 40;
+    width: 44px; height: 44px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+    box-shadow: var(--shadow);
+  }
+  .sb-search input { font-size: 16px; }  /* 16px stops iOS from zooming the page on focus */
   .side {
     position: fixed; z-index: 50; left: 0; top: 0; bottom: 0;
     width: min(86vw, 320px);

@@ -139,7 +139,10 @@
         '<span class="nav-prog">' + (p.done === p.total && p.total ? '✓' : p.done + '/' + p.total) + '</span></a></li>';
     });
     h += '</ul>';
-    $('#side').innerHTML = h;
+    // brand and nav are re-rendered; the search form between them is static so typing never loses focus
+    var cut = h.indexOf('<ul class="nav-list">');
+    $('#sideBrand').innerHTML = h.slice(0, cut);
+    $('#sideNav').innerHTML = h.slice(cut);
   }
 
   /* ───────────── content blocks ───────────── */
@@ -274,7 +277,7 @@
     toTop();
   }
 
-  function showChapter(ch, pi) {
+  function showChapter(ch, pi, hit) {
     var p = ch.parts[pi];
     run = null; runCtx = null;
     st.last = { ch: ch.id, part: p.id }; save();
@@ -293,7 +296,7 @@
       h += '<article class="card content"><h3 class="part-title" style="margin-top:0;color:var(--ink);font-family:var(--sans)">' + pTitle(ch, p) + '</h3>' +
         (p.page ? '<div class="page-ref">교재 ' + esc(p.page) + '</div>' : '') +
         (p.ko ? '<div class="tldr"><b>한 줄 요약</b>' + p.ko + '</div>' : '') +
-        blocksFor(ch, p).map(block).join('') + '</article>';
+        blocksFor(ch, p).map(function (b, i) { return '<div class="blk" data-b="' + i + '">' + block(b) + '</div>'; }).join('') + '</article>';
       h += pager(ch, pi, true);
     } else {
       h += '<article class="card"><h3 class="part-title">' + pTitle(ch, p) + '</h3>' +
@@ -303,7 +306,7 @@
     h += '</div>';
     main.innerHTML = h;
     if (p.kind === 'quiz') { runCtx = { ch: ch, p: p }; renderQuizIntro(); }
-    toTop();
+    if (hit) revealHit(hit); else toTop();
   }
 
   function pager(ch, pi, markRead) {
@@ -811,6 +814,7 @@
   });
 
   document.addEventListener('keydown', function (e) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;   // typing in the search box is not a quiz key
     if (!run || e.metaKey || e.ctrlKey || e.altKey) return;
     var it = run.items[run.i];
     if (!it) return;
@@ -869,14 +873,204 @@
   });
   syncLangButtons();
 
+  /* ───────────── search ───────────── */
+  var escRe = function (s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); };
+  var plain = function (s) {
+    return String(s).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+  };
+  function treeText(n) {
+    if (typeof n === 'string') return n;
+    var s = n.q || '';
+    (n.b || []).forEach(function (x) { s += ' ' + x[0] + ' ' + treeText(x[1]); });
+    return s;
+  }
+  function blockText(b) {
+    if (typeof b === 'string') return b;
+    var out = [];
+    ['h', 'h4', 'p', 'note', 'title'].forEach(function (k) { if (typeof b[k] === 'string') out.push(b[k]); });
+    if (b.list) out = out.concat(b.list);
+    if (b.box) b.box.forEach(function (x) { out.push(blockText(x)); });
+    if (b.ex) {
+      out.push(b.ex);
+      b.lines.forEach(function (l) { out.push(typeof l === 'string' ? l : l[0] + ' ' + (l[1] || '')); });
+    }
+    if (b.words) out = out.concat(b.words.map(function (w) { return w.replace(/^\*/, ''); }));
+    if (b.table) {
+      (b.table.head || []).forEach(function (c) { out.push(c); });
+      b.table.rows.forEach(function (r) { r.forEach(function (c) { out.push(String(c).replace(/^\*/, '')); }); });
+    }
+    if (b.tree) out.push((b.tree.title || '') + ' ' + treeText(b.tree.root));
+    return out.join(' ');
+  }
+
+  // One entry per concept block / part title / quiz question / quiz instruction. English and Korean text are
+  // both searchable, whichever language the page is showing.
+  var SIDX = null;
+  function buildIndex() {
+    var out = [];
+    chapters.forEach(function (ch) {
+      var koC = KO[ch.id] || {};
+      ch.parts.forEach(function (p) {
+        var koP = (koC.parts || {})[p.id] || {};
+        out.push({ k: 'learn', ch: ch, p: p, b: null, rank: 0, en: plain(p.title + ' ' + (p.ko || '')), ko: plain((koP.title || '') + ' ' + (p.ko || '')) });
+        if (p.kind === 'learn') {
+          p.blocks.forEach(function (b, i) {
+            var en = plain(blockText(b)), ov = koP.blocks ? koP.blocks[i] : null;
+            var ko = ov ? plain(blockText(localizeBlock(b, ov))) : '';
+            if (en || ko) out.push({ k: 'learn', ch: ch, p: p, b: i, rank: 1, en: en, ko: ko });
+          });
+        } else {
+          out.push({ k: 'set', ch: ch, p: p, rank: 2, en: plain(p.instr || ''), ko: plain(koP.instr || '') });
+          p.items.forEach(function (it, i) {
+            out.push({ k: 'q', ch: ch, p: p, i: i, rank: 3, en: plain(it.q), ko: plain((it.why || '') + ' ' + (it.a === undefined ? '' : ansText(it))) });
+          });
+        }
+      });
+    });
+    out.forEach(function (e) { e.hay = (e.en + ' ' + e.ko).toLowerCase(); });
+    return out;
+  }
+  function searchTerms(q) {
+    return q.toLowerCase().split(/\s+/).filter(function (t) { return t.length > 1 || /[^\x00-\x7f]/.test(t); });
+  }
+  function runSearch(terms) {
+    if (!terms.length) return [];
+    var idx = SIDX || (SIDX = buildIndex());
+    return idx.filter(function (e) { return terms.every(function (t) { return e.hay.indexOf(t) >= 0; }); })
+      .map(function (e, n) { return { e: e, n: n }; })
+      .sort(function (a, b) { return a.e.rank - b.e.rank || a.n - b.n; })
+      .map(function (x) { return x.e; });
+  }
+  function hl(text, terms) {
+    var re = new RegExp('(' + terms.slice().sort(function (a, b) { return b.length - a.length; }).map(escRe).join('|') + ')', 'gi');
+    return text.split(re).map(function (s, i) { return i % 2 ? '<mark class="sh">' + esc(s) + '</mark>' : esc(s); }).join('');
+  }
+  function snippet(e, terms) {
+    var pref = lang === 'ko' ? [e.ko, e.en] : [e.en, e.ko], txt = pref[0] || pref[1] || '', i;
+    for (i = 0; i < pref.length; i++) if (pref[i] && pref[i].toLowerCase().indexOf(terms[0]) >= 0) { txt = pref[i]; break; }
+    var pos = Math.max(0, txt.toLowerCase().indexOf(terms[0])), from = Math.max(0, pos - 50), to = Math.min(txt.length, pos + 130);
+    return (from > 0 ? '…' : '') + hl(txt.slice(from, to), terms) + (to < txt.length ? '…' : '');
+  }
+  function markTerms(root, terms) {
+    var re = new RegExp('(' + terms.slice().sort(function (a, b) { return b.length - a.length; }).map(escRe).join('|') + ')', 'gi');
+    var test = new RegExp(re.source, 'i'), w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), nodes = [], n;
+    while ((n = w.nextNode())) nodes.push(n);
+    nodes.forEach(function (node) {
+      if (!test.test(node.nodeValue)) return;
+      var frag = document.createDocumentFragment();
+      node.nodeValue.split(re).forEach(function (part, i) {
+        if (i % 2) { var m = document.createElement('mark'); m.className = 'sh'; m.textContent = part; frag.appendChild(m); }
+        else if (part) frag.appendChild(document.createTextNode(part));
+      });
+      node.parentNode.replaceChild(frag, node);
+    });
+  }
+  // after opening a result: highlight the terms, flash and scroll to the matching block
+  function revealHit(hit) {
+    var terms = searchTerms(hit.q || ''), has = hit.b !== null && hit.b !== undefined && hit.b !== '';
+    var el = has ? main.querySelector('.blk[data-b="' + hit.b + '"]') : null;
+    if (terms.length) {
+      // a title hit may sit in the title or in the one-line summary below it
+      (el ? [el] : [main.querySelector('.part-title'), main.querySelector('.tldr')]).forEach(function (scope) { if (scope) markTerms(scope, terms); });
+    }
+    if (el) {
+      el.classList.add('hit');
+      window.scrollTo(0, Math.max(0, el.getBoundingClientRect().top + window.scrollY - 90));
+    } else toTop();
+  }
+
+  function pathLabel(e) {
+    return esc(e.ch.no) + ' · ' + esc(plain(pTitle(e.ch, e.p))) + (e.k === 'q' ? ' · ' + (e.i + 1) + '번' : e.k === 'set' ? ' · 지시문' : '');
+  }
+  function resultHtml(e, terms, q) {
+    var base = '#/c/' + e.ch.id + '/' + encodeURIComponent(e.p.id);
+    if (e.k === 'q') {
+      var it = e.p.items[e.i];
+      var ans = it.reveal ? it.reveal : '<b>' + esc(ansText(it)) + '</b>';
+      return '<div class="sr"><a class="sr-link" href="' + base + '"><span class="sr-path">' + pathLabel(e) + '</span><span class="sr-snip">' + snippet(e, terms) + '</span></a>' +
+        '<details class="sr-d"><summary>정답 · 해설</summary><div class="sr-ans">' + ans + (it.why ? '<div class="sr-why">' + it.why + '</div>' : '') + '</div></details></div>';
+    }
+    var href2 = e.k === 'learn' ? base + '?b=' + (e.b === null ? '' : e.b) + '&q=' + encodeURIComponent(q) : base;
+    return '<div class="sr"><a class="sr-link" href="' + href2 + '"><span class="sr-path">' + pathLabel(e) + '</span><span class="sr-snip">' + snippet(e, terms) + '</span></a></div>';
+  }
+  var SUGGEST = ['fragment', 'whom', 'FANBOYS', 'dangling', 'parallel', '세미콜론', '가정법', '도치'];
+  var CAP = 40;
+  function searchHtml(q) {
+    var terms = searchTerms(q);
+    var h = '<div class="wrap"><div class="ch-no">검색</div><h2 class="ch-title">' + (q ? esc(q) : '검색') + '</h2>';
+    if (!terms.length) {
+      h += '<div class="chips">' + SUGGEST.map(function (s) { return '<a class="rail-chip" href="#/search/' + encodeURIComponent(s) + '">' + esc(s) + '</a>'; }).join('') + '</div></div>';
+      return h;
+    }
+    var res = runSearch(terms);
+    var learn = res.filter(function (e) { return e.k === 'learn'; }), qs = res.filter(function (e) { return e.k !== 'learn'; });
+    if (!res.length) return h + '<div class="card empty" style="margin-top:18px"><b>결과가 없어요</b></div></div>';
+    function group(title, list) {
+      if (!list.length) return '';
+      return '<section class="sr-group"><h3>' + title + ' <span>' + list.length + '</span></h3>' +
+        list.slice(0, CAP).map(function (e) { return resultHtml(e, terms, q); }).join('') +
+        (list.length > CAP ? '<div class="sr-more">+' + (list.length - CAP) + '개 더 있어요. 검색어를 더 구체적으로 써 보세요.</div>' : '') + '</section>';
+    }
+    return h + group('개념 · 설명', learn) + group('문제', qs) + '</div>';
+  }
+  function showSearch(q) {
+    run = null; runCtx = null;
+    setTitle(q ? '검색 · ' + q : '검색');
+    renderSide('search');
+    var inp = $('#sbq'); if (inp && inp.value !== q) inp.value = q;
+    main.innerHTML = searchHtml(q);
+    toTop();
+  }
+  function doSearch(raw) {
+    var q = raw.trim(), target = '#/search/' + encodeURIComponent(q);
+    if (/^#\/search(\/|$)/.test(location.hash)) { history.replaceState(null, '', target); showSearch(q); }   // typing refines in place
+    else location.hash = target;
+  }
+
+  (function initSearchUi() {
+    var ico = '<svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
+    $('#side').innerHTML = '<div id="sideBrand"></div><form id="sbForm" class="sb-search" role="search" autocomplete="off">' + ico +
+      '<input id="sbq" type="search" placeholder="검색" aria-label="검색" enterkeyhint="search"><kbd>/</kbd></form><div id="sideNav"></div>';
+    var btn = document.createElement('button');
+    btn.id = 'searchBtn'; btn.type = 'button'; btn.className = 'search-btn'; btn.setAttribute('aria-label', '검색'); btn.innerHTML = ico;
+    document.body.appendChild(btn);
+
+    var inp = $('#sbq'), timer = null, wide = window.matchMedia('(min-width: 861px)');
+    function focusSearch() {
+      if (!wide.matches) document.body.classList.add('nav-open');
+      inp.focus(); inp.select();
+    }
+    btn.addEventListener('click', focusSearch);
+    $('#sbForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      doSearch(inp.value);
+      if (!wide.matches) { closeNav(); inp.blur(); }
+    });
+    inp.addEventListener('input', function () {
+      if (!wide.matches) return;                        // on phones the drawer covers the results: search on Enter
+      clearTimeout(timer); timer = setTimeout(function () { doSearch(inp.value); }, 140);
+    });
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Escape') inp.blur(); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;
+      e.preventDefault(); focusSearch();
+    });
+  })();
+
   /* router */
   function route() {
-    var h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+    var raw = location.hash.replace(/^#\/?/, '');
+    if (/^search(\/|$)/.test(raw)) { var sq = ''; try { sq = decodeURIComponent(raw.slice(7)); } catch (err) { sq = raw.slice(7); } return showSearch(sq); }
+    var qi = raw.indexOf('?'), query = qi >= 0 ? raw.slice(qi + 1) : '', h = qi >= 0 ? raw.slice(0, qi) : raw;
+    try { h = decodeURIComponent(h); } catch (err2) { /* keep raw */ }
     var seg = h.split('/');
     if (seg[0] === 'c' && byId[seg[1]]) {
       var ch = byId[seg[1]];
       var pi = seg[2] ? ch.parts.findIndex(function (p) { return p.id === seg[2]; }) : defaultPart(ch);
-      return showChapter(ch, pi < 0 ? 0 : pi);
+      var hp = query ? new URLSearchParams(query) : null;
+      return showChapter(ch, pi < 0 ? 0 : pi, hp && (hp.has('b') || hp.has('q')) ? { b: hp.get('b'), q: hp.get('q') } : null);
     }
     if (seg[0] === 'wrong') return showWrong();
     if (seg[0] === 'practice') {
