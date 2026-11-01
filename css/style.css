@@ -407,6 +407,8 @@ table.tbl { border-collapse: collapse; width: 100%; font-family: var(--serif); f
 .sr-ans { padding: 0 0 12px; font-family: var(--serif); font-size: 15.5px; line-height: 1.6; }
 .sr-why { font: 14px/1.55 var(--sans); color: var(--ink-2); margin-top: 4px; }
 .sr-more { color: var(--muted); font-size: 13px; padding: 4px 2px; }
+.sr-loose { margin-top: 26px; border-top: 1px dashed var(--line); padding-top: 4px; }
+.sr-loose > summary { cursor: pointer; padding: 12px 2px; font-size: 14px; font-weight: 600; color: var(--ink-2); }
 mark.sh, .content mark.sh { background: var(--hl-o); color: inherit; border-radius: 3px; padding: 0 1px; }
 .blk.hit { border-radius: 10px; animation: hitflash 2.6s ease-out 1; }
 @keyframes hitflash {

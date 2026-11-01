@@ -874,7 +874,6 @@
   syncLangButtons();
 
   /* ───────────── search ───────────── */
-  var escRe = function (s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); };
   var plain = function (s) {
     return String(s).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ')
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
@@ -934,35 +933,84 @@
   function searchTerms(q) {
     return q.toLowerCase().split(/\s+/).filter(function (t) { return t.length > 1 || /[^\x00-\x7f]/.test(t); });
   }
+
+  // Matching rules: an English term must start at a word boundary ("one" no longer matches "anyone"),
+  // terms of up to 3 letters must be whole words ("not" no longer matches "notices"), longer ones may be
+  // prefixes ("fragment" finds "fragments"). Korean terms match anywhere, since particles stick to words.
+  var isAlnum = function (c) { return /[A-Za-z0-9]/.test(c); };
+  function termOk(text, s, e, term) {
+    if (/[^\x00-\x7f]/.test(term)) return true;
+    if (s > 0 && isAlnum(text.charAt(s - 1))) return false;
+    if (term.length <= 3 && e < text.length && isAlnum(text.charAt(e))) return false;
+    return true;
+  }
+  function findAll(low, term) {
+    var out = [], i = low.indexOf(term);
+    while (i >= 0) {
+      if (termOk(low, i, i + term.length, term)) out.push([i, i + term.length]);
+      i = low.indexOf(term, i + 1);
+    }
+    return out;
+  }
+  // character ranges to highlight: the whole phrase when it occurs, otherwise each term
+  function termRanges(text, terms) {
+    var low = text.toLowerCase(), all = [];
+    if (terms.length > 1) all = all.concat(findAll(low, terms.join(' ')));
+    terms.forEach(function (t) { all = all.concat(findAll(low, t)); });
+    all.sort(function (x, y) { return x[0] - y[0] || y[1] - x[1]; });
+    var merged = [];
+    all.forEach(function (r) {
+      var l = merged[merged.length - 1];
+      if (l && r[0] <= l[1]) l[1] = Math.max(l[1], r[1]); else merged.push([r[0], r[1]]);
+    });
+    return merged;
+  }
+  // 0 = the exact phrase appears, 1 = every term appears, -1 = no match
+  function tierOf(hay, terms) {
+    if (terms.length > 1 && findAll(hay, terms.join(' ')).length) return 0;
+    return terms.every(function (t) { return findAll(hay, t).length > 0; }) ? 1 : -1;
+  }
   function runSearch(terms) {
     if (!terms.length) return [];
-    var idx = SIDX || (SIDX = buildIndex());
-    return idx.filter(function (e) { return terms.every(function (t) { return e.hay.indexOf(t) >= 0; }); })
-      .map(function (e, n) { return { e: e, n: n }; })
-      .sort(function (a, b) { return a.e.rank - b.e.rank || a.n - b.n; })
-      .map(function (x) { return x.e; });
+    var idx = SIDX || (SIDX = buildIndex()), res = [];
+    idx.forEach(function (e, n) { var t = tierOf(e.hay, terms); if (t >= 0) res.push({ e: e, t: t, n: n }); });
+    res.sort(function (a, b) { return a.t - b.t || a.e.rank - b.e.rank || a.n - b.n; });
+    return res;   // [{e: entry, t: tier}]
   }
   function hl(text, terms) {
-    var re = new RegExp('(' + terms.slice().sort(function (a, b) { return b.length - a.length; }).map(escRe).join('|') + ')', 'gi');
-    return text.split(re).map(function (s, i) { return i % 2 ? '<mark class="sh">' + esc(s) + '</mark>' : esc(s); }).join('');
+    var out = '', pos = 0;
+    termRanges(text, terms).forEach(function (r) {
+      out += esc(text.slice(pos, r[0])) + '<mark class="sh">' + esc(text.slice(r[0], r[1])) + '</mark>';
+      pos = r[1];
+    });
+    return out + esc(text.slice(pos));
   }
+  // questions always show the question sentence itself; other entries show the text (in the page's language) that matched
   function snippet(e, terms) {
-    var pref = lang === 'ko' ? [e.ko, e.en] : [e.en, e.ko], txt = pref[0] || pref[1] || '', i;
-    for (i = 0; i < pref.length; i++) if (pref[i] && pref[i].toLowerCase().indexOf(terms[0]) >= 0) { txt = pref[i]; break; }
-    var pos = Math.max(0, txt.toLowerCase().indexOf(terms[0])), from = Math.max(0, pos - 50), to = Math.min(txt.length, pos + 130);
+    var txt;
+    if (e.k === 'q') txt = e.en;
+    else {
+      var pref = (lang === 'ko' ? [e.ko, e.en] : [e.en, e.ko]).filter(Boolean);
+      txt = pref.filter(function (t) { return termRanges(t, terms).length; })[0] || pref[0] || '';
+    }
+    var rs = termRanges(txt, terms), pos = rs.length ? rs[0][0] : 0;
+    var from = Math.max(0, pos - 50), to = Math.min(txt.length, pos + (e.k === 'q' ? 240 : 130));
+    if (e.k === 'q' && txt.length <= 300) { from = 0; to = txt.length; }
     return (from > 0 ? '…' : '') + hl(txt.slice(from, to), terms) + (to < txt.length ? '…' : '');
   }
   function markTerms(root, terms) {
-    var re = new RegExp('(' + terms.slice().sort(function (a, b) { return b.length - a.length; }).map(escRe).join('|') + ')', 'gi');
-    var test = new RegExp(re.source, 'i'), w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), nodes = [], n;
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), nodes = [], n;
     while ((n = w.nextNode())) nodes.push(n);
     nodes.forEach(function (node) {
-      if (!test.test(node.nodeValue)) return;
-      var frag = document.createDocumentFragment();
-      node.nodeValue.split(re).forEach(function (part, i) {
-        if (i % 2) { var m = document.createElement('mark'); m.className = 'sh'; m.textContent = part; frag.appendChild(m); }
-        else if (part) frag.appendChild(document.createTextNode(part));
+      var s = node.nodeValue, rs = termRanges(s, terms);
+      if (!rs.length) return;
+      var frag = document.createDocumentFragment(), pos = 0;
+      rs.forEach(function (r) {
+        if (r[0] > pos) frag.appendChild(document.createTextNode(s.slice(pos, r[0])));
+        var m = document.createElement('mark'); m.className = 'sh'; m.textContent = s.slice(r[0], r[1]); frag.appendChild(m);
+        pos = r[1];
       });
+      if (pos < s.length) frag.appendChild(document.createTextNode(s.slice(pos)));
       node.parentNode.replaceChild(frag, node);
     });
   }
@@ -988,8 +1036,10 @@
     if (e.k === 'q') {
       var it = e.p.items[e.i];
       var ans = it.reveal ? it.reveal : '<b>' + esc(ansText(it)) + '</b>';
+      // when the words were found only in the explanation, open it so the match is visible
+      var low = e.en.toLowerCase(), inSentence = terms.every(function (t) { return findAll(low, t).length > 0; });
       return '<div class="sr"><a class="sr-link" href="' + base + '"><span class="sr-path">' + pathLabel(e) + '</span><span class="sr-snip">' + snippet(e, terms) + '</span></a>' +
-        '<details class="sr-d"><summary>정답 · 해설</summary><div class="sr-ans">' + ans + (it.why ? '<div class="sr-why">' + it.why + '</div>' : '') + '</div></details></div>';
+        '<details class="sr-d"' + (inSentence ? '' : ' open') + '><summary>정답 · 해설</summary><div class="sr-ans">' + ans + (it.why ? '<div class="sr-why">' + it.why + '</div>' : '') + '</div></details></div>';
     }
     var href2 = e.k === 'learn' ? base + '?b=' + (e.b === null ? '' : e.b) + '&q=' + encodeURIComponent(q) : base;
     return '<div class="sr"><a class="sr-link" href="' + href2 + '"><span class="sr-path">' + pathLabel(e) + '</span><span class="sr-snip">' + snippet(e, terms) + '</span></a></div>';
@@ -1004,7 +1054,6 @@
       return h;
     }
     var res = runSearch(terms);
-    var learn = res.filter(function (e) { return e.k === 'learn'; }), qs = res.filter(function (e) { return e.k !== 'learn'; });
     if (!res.length) return h + '<div class="card empty" style="margin-top:18px"><b>결과가 없어요</b></div></div>';
     function group(title, list) {
       if (!list.length) return '';
@@ -1012,7 +1061,14 @@
         list.slice(0, CAP).map(function (e) { return resultHtml(e, terms, q); }).join('') +
         (list.length > CAP ? '<div class="sr-more">+' + (list.length - CAP) + '개 더 있어요. 검색어를 더 구체적으로 써 보세요.</div>' : '') + '</section>';
     }
-    return h + group('개념 · 설명', learn) + group('문제', qs) + '</div>';
+    function groups(list) {
+      return group('개념 · 설명', list.filter(function (e) { return e.k === 'learn'; })) +
+        group('문제', list.filter(function (e) { return e.k !== 'learn'; }));
+    }
+    var exact = res.filter(function (x) { return x.t === 0; }).map(function (x) { return x.e; });
+    var loose = res.filter(function (x) { return x.t === 1; }).map(function (x) { return x.e; });
+    if (!exact.length) return h + groups(loose) + '</div>';           // single words, or no exact phrase anywhere
+    return h + groups(exact) + (loose.length ? '<details class="sr-loose"><summary>단어가 따로 들어간 결과 ' + loose.length + '개</summary>' + groups(loose) + '</details>' : '') + '</div>';
   }
   function showSearch(q) {
     run = null; runCtx = null;
@@ -1020,6 +1076,8 @@
     renderSide('search');
     var inp = $('#sbq'); if (inp && inp.value !== q) inp.value = q;
     main.innerHTML = searchHtml(q);
+    var terms = searchTerms(q);
+    if (terms.length) Array.prototype.forEach.call(main.querySelectorAll('.sr-ans'), function (a) { markTerms(a, terms); });
     toTop();
   }
   function doSearch(raw) {
