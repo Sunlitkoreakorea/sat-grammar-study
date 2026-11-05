@@ -42,7 +42,7 @@
   var ROWS = [
     ['문제 범위', [['test', '시험'], ['area', '영역'], ['diff', '난이도'], ['band', 'Score Band'], ['added', '추가 시기'], ['active', 'Active 문제'], ['pool', '풀이 기록']]],
     ['푸는 방식', [['count', '문제 수'], ['order', '순서'], ['time', '시간'], ['check', '채점'], ['view', '화면']]],
-    ['', [['ids', 'ID로 풀기'], ['stats', '내 기록']]]
+    ['', [['ids', 'ID로 풀기'], ['stats', '내 기록'], ['backup', '백업과 복원']]]
   ];
   var SEC_PER_Q = 71;                       // a Reading and Writing module: 32 minutes for 27 questions
   var SKEY = 'sat-bb-v1', DAY = 864e5;
@@ -69,7 +69,8 @@
   }
   // res: latest result per question (1/0), log: attempt history with ids/codes/letters only, flag: 헷갈림 (Mark for Review),
   // star: 별표, memo: the user's own notes. No question text is ever saved.
-  var store = { v: 2, res: {}, log: {}, flag: {}, star: {}, memo: {}, sessions: [], prefs: defaults(), legacy: false };
+  // words: the user's 단어장 (word, its sentence, own meaning, cached dictionary entry)
+  var store = { v: 2, res: {}, log: {}, flag: {}, star: {}, memo: {}, words: {}, sessions: [], prefs: defaults(), legacy: false, lastBackup: 0 };
   try {
     var raw = JSON.parse(localStorage.getItem(SKEY) || 'null');
     if (raw) {
@@ -78,6 +79,8 @@
       store.flag = raw.flag || {};
       store.star = raw.star || {};
       store.memo = raw.memo || {};
+      store.words = raw.words || {};
+      store.lastBackup = raw.lastBackup || 0;
       store.sessions = raw.sessions || [];
       if (raw.v === 2) {
         for (var k in (raw.prefs || {})) if (k in store.prefs) store.prefs[k] = raw.prefs[k];
@@ -283,7 +286,11 @@
     grip: '<svg width="14" height="20" viewBox="0 0 14 20" aria-hidden="true"><path d="M5 4l-4 6 4 6M9 4l4 6-4 6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     check: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     minus: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>',
-    star: '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4L2.8 9.5l6.4-.8z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>'
+    star: '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4L2.8 9.5l6.4-.8z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
+    book: '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 8h7M9 11.5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    down2: '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    up2: '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 9.5l5-5 5 5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    sound: '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
   };
   function starBtn(ext, a) {
     var on = !!store.star[ext];
@@ -296,7 +303,10 @@
 
   /* ───────── filtering ───────── */
   var view = 'home', S = null, timerId = null;
-  var ui = { sel: 'area', open: false, ids: '', tab: 'solve', nf: 'now', nsk: '', nsort: 'recent', note: null, noteOpen: false, rev: {}, tried: {}, busy: false };
+  var ui = {
+    sel: 'area', open: false, ids: '', tab: 'solve', nf: 'now', nsk: '', nsort: 'recent', note: null, noteOpen: false, rev: {}, tried: {}, busy: false,
+    wordMode: false, wf: 'learn', wq: '', wsort: 'recent', word: null, wordOpen: false, fc: null, pending: null, goBackup: false
+  };
   function cur() { return lists[store.prefs.ev] || []; }
   // every filter except `skip`, so each option can show how many questions it would add
   function matcher(skip) {
@@ -399,6 +409,7 @@
       case 'view': return FONTS[p.font][1] + (p.info ? ', 유형 표시' : '');
       case 'ids': return findIds(ui.ids).items.length ? findIds(ui.ids).items.length + '문제' : '';
       case 'stats': var st = stats(cur()); return st.good + st.bad ? (st.good + st.bad) + '문제 풂' : '';
+      case 'backup': return store.lastBackup ? '마지막 ' + dateStr(store.lastBackup) : '아직 안 함';
     }
     return '';
   }
@@ -513,6 +524,13 @@
         }).join('') + '</ul>';
       }
       h += '<div class="d-line"><span></span><button type="button" class="mini danger" data-a="clearask">기록 지우기</button></div>';
+    } else if (k === 'backup') {
+      var c0 = dataCounts(store);
+      h = '<p class="d-note">기록은 이 브라우저에만 있어요. 파일로 받아 두면 다른 기기에서도 복원할 수 있어요.</p>' +
+        '<div class="bk-grid"><button type="button" class="bk" data-a="bkdown">' + I.down2 + '<span><b>백업 파일 받기</b><small>' +
+        (store.lastBackup ? '마지막 백업 ' + dateStr(store.lastBackup) + ' ' + timeStr(store.lastBackup) : 'JSON 파일') + '</small></span></button>' +
+        '<button type="button" class="bk" data-a="bkup">' + I.up2 + '<span><b>복원하기</b><small>백업 파일 고르기</small></span></button></div>' +
+        '<div class="d-sub">지금 들어 있는 것</div><p class="bk-sum">' + countsText(c0) + '</p>';
     }
     return '<div class="d-top"><button type="button" class="d-back" data-a="back">' + I.left + '설정</button><h2>' + title + '</h2><div class="d-tools">' + tools + '</div></div>' + h;
   }
@@ -595,7 +613,8 @@
     var q = qcache[ext];
     var h = '<div class="d-top"><button type="button" class="d-back" data-a="nback">' + I.left + '목록</button>' +
       '<div class="nd-title"><b>' + esc(SK[e.sk].name) + '</b><span>' + DIFF_EN[e.d] + (e.id ? '  ID ' + esc(e.id) : '') + '</span></div>' +
-      '<div class="d-tools">' + starBtn(ext, 'nstar') + confBtn(ext, 'nconf') + '</div></div>' +
+      '<div class="d-tools"><button type="button" class="kp kp-word' + (ui.wordMode ? ' on' : '') + '" data-a="nword" aria-pressed="' + ui.wordMode + '" title="모르는 단어를 눌러 단어장에 저장">' + I.book + '<span>단어</span></button>' +
+      starBtn(ext, 'nstar') + confBtn(ext, 'nconf') + '</div></div>' +
       '<p class="nd-hist">' + (e.n ? e.n + '번 풀어서 ' + e.w + '번 틀림' : e.w ? '틀린 문제' : '') +
       (e.w && e.a !== undefined ? ', 마지막 오답 ' + (e.a || '답 안 함') : '') + (e.res === 1 && e.w ? ', 지금은 맞힘' : '') + '</p>';
     if (!q) {
@@ -623,7 +642,7 @@
   }
   function refreshDetail(ext) {
     var d = document.getElementById('nDetail');
-    if (d && view === 'home' && ui.tab === 'notes' && ui.note === ext) d.innerHTML = noteDetail(ext);
+    if (d && view === 'home' && ui.tab === 'notes' && ui.note === ext) { d.innerHTML = noteDetail(ext); applyWordMarks(d); }
     var c = document.getElementById('nCards');
     if (c && view === 'home' && ui.tab === 'notes') c.innerHTML = cardsHtml(noteList().list);
   }
@@ -699,9 +718,444 @@
     });
   }
 
+  /* ───────── 단어장: words the user didn't know ───────── */
+  var WFILTERS = [['learn', '외우는 중'], ['ok', '외움'], ['all', '전체']];
+  var WORD_AREA = '.bb-passage, .bb-stem, .bb-ch-text, .bb-why';
+  var DICT = 'https://api.dictionaryapi.dev/api/v2/entries/en/', WIKT = 'https://en.wiktionary.org/api/rest_v1/page/definition/';
+  var LETTER = 'A-Za-z\\u00C0-\\u024F';
+  function timeStr(t) { var d = new Date(t); return d.getHours() + ':' + ('0' + d.getMinutes()).slice(-2); }
+  function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  var toastT = null;
+  function toast(msg) {
+    var el = document.getElementById('toast');
+    if (!el) { el = document.createElement('div'); el.id = 'toast'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+    el.textContent = msg;
+    el.className = 'show';
+    clearTimeout(toastT);
+    toastT = setTimeout(function () { el.className = ''; }, 1800);
+  }
+  function wordActive() {
+    return (view === 'test' && S && S.wordMode && S.phase !== 'check') || (view === 'home' && ui.tab === 'notes' && ui.wordMode);
+  }
+  function plainText(el) {
+    var c = el.cloneNode(true);
+    Array.prototype.forEach.call(c.querySelectorAll('.sr-only, svg'), function (n) { n.parentNode.removeChild(n); });
+    return c.textContent.replace(/\s+/g, ' ').trim();
+  }
+  function sentenceOf(text, w) {
+    var lo = text.toLowerCase(), i = lo.indexOf(w.toLowerCase());
+    if (i < 0) return text.slice(0, 240);
+    var s = Math.max(lo.lastIndexOf('. ', i), lo.lastIndexOf('? ', i), lo.lastIndexOf('! ', i));
+    s = s < 0 ? 0 : s + 2;
+    var e = text.slice(i).search(/[.?!](\s|$)/);
+    e = e < 0 ? text.length : i + e + 1;
+    var out = text.slice(s, e).trim();
+    return out.length > 320 ? out.slice(0, 320) + '…' : out;
+  }
+  // the word under a tap: the selection if there is one (lets a mouse drag save a phrase), otherwise the letters around the caret
+  function wordAt(e) {
+    var sel = window.getSelection(), text = '', node = null, re = new RegExp('[' + LETTER + "'’-]");
+    if (sel && !sel.isCollapsed && sel.rangeCount) { text = sel.toString(); node = sel.getRangeAt(0).startContainer; }
+    else {
+      var r = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+      if (!r && document.caretPositionFromPoint) {
+        var cp = document.caretPositionFromPoint(e.clientX, e.clientY);
+        if (cp) { r = document.createRange(); r.setStart(cp.offsetNode, cp.offset); }
+      }
+      if (!r || r.startContainer.nodeType !== 3) return null;
+      node = r.startContainer;
+      var s = node.nodeValue, a = r.startOffset, b = r.startOffset;
+      while (a > 0 && re.test(s.charAt(a - 1))) a--;
+      while (b < s.length && re.test(s.charAt(b))) b++;
+      text = s.slice(a, b);
+    }
+    text = text.replace(/\s+/g, ' ').replace(new RegExp('^[^' + LETTER + ']+|[^' + LETTER + ']+$', 'g'), '').replace(/['’]s$/i, '');
+    if (!text || text.length > 40 || text.split(' ').length > 4) return null;
+    var el = node && (node.nodeType === 3 ? node.parentNode : node);
+    var block = el && el.closest ? el.closest('p, li, td, th, caption, ' + WORD_AREA) : null;
+    return { w: text, ctx: block ? sentenceOf(plainText(block), text) : '' };
+  }
+  function currentQ() {
+    if (view === 'test' && S) return S.items[S.i];
+    if (view === 'home' && ui.note) return noteEntry(ui.note);
+    return null;
+  }
+  function pickWord(e) {
+    var area = e.target.closest && e.target.closest(WORD_AREA);
+    if (!area) return false;
+    e.preventDefault();
+    var uw = e.target.closest('.uw'), sel = window.getSelection();
+    if (uw && (!sel || sel.isCollapsed)) {                    // tapping a saved word takes it back out
+      var k0 = uw.textContent.toLowerCase();
+      if (store.words[k0]) { delete store.words[k0]; save(); toast('단어장에서 뺐어요: ' + uw.textContent); }
+    } else {
+      var got = wordAt(e);
+      if (!got) { toast('단어를 다시 눌러 주세요'); return true; }
+      var key = got.w.toLowerCase(), x = currentQ(), o = store.words[key] || { w: got.w, t: Date.now(), my: '', ok: false, k: 0 };
+      if (got.ctx) o.ctx = got.ctx;
+      if (x) { o.ext = x.ext; o.qid = x.id; o.sk = x.sk; o.d = x.d; }
+      store.words[key] = o;
+      save();
+      toast('단어장에 저장: ' + got.w);
+    }
+    if (sel) sel.removeAllRanges();
+    if (view === 'test') renderTest(); else refreshDetail(ui.note);
+    return true;
+  }
+  // saved words get a dotted underline wherever they appear in a question
+  var wre = null, wreSig = null;
+  function wordRegex() {
+    var ws = Object.keys(store.words), sig = ws.join('|');
+    if (sig !== wreSig) {
+      wreSig = sig;
+      wre = ws.length ? new RegExp('(^|[^' + LETTER + '])(' + ws.slice().sort(function (a, b) { return b.length - a.length; }).map(escRe).join('|') + ')(?=[^' + LETTER + ']|$)', 'gi') : null;
+    }
+    return wre;
+  }
+  function applyWordMarks(root) {
+    var re = wordRegex();
+    if (!re || !root) return;
+    Array.prototype.forEach.call(root.querySelectorAll(WORD_AREA), function (box) {
+      var tw = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, null), nodes = [];
+      while (tw.nextNode()) { var n = tw.currentNode; if (!n.parentNode.closest('.uw, .sr-only, svg')) nodes.push(n); }
+      nodes.forEach(function (n) {
+        var s = n.nodeValue, m, last = 0, frag = null;
+        re.lastIndex = 0;
+        while ((m = re.exec(s))) {
+          var st = m.index + m[1].length, en = st + m[2].length, o = store.words[m[2].toLowerCase()];
+          frag = frag || document.createDocumentFragment();
+          frag.appendChild(document.createTextNode(s.slice(last, st)));
+          var sp = document.createElement('span');
+          sp.className = 'uw';
+          sp.textContent = s.slice(st, en);
+          if (o && meanOf(o)) sp.title = meanOf(o);
+          frag.appendChild(sp);
+          last = en;
+          if (re.lastIndex <= m.index) re.lastIndex = m.index + 1;
+        }
+        if (frag) { frag.appendChild(document.createTextNode(s.slice(last))); n.parentNode.replaceChild(frag, n); }
+      });
+    });
+  }
+  function stripUw(html) {
+    var d = document.createElement('div');
+    d.innerHTML = html;
+    Array.prototype.forEach.call(d.querySelectorAll('.uw'), function (u) { u.parentNode.replaceChild(document.createTextNode(u.textContent), u); });
+    d.normalize();
+    return d.innerHTML;
+  }
+
+  // English definitions: Free Dictionary API first, Wiktionary when it has nothing (both allow any origin)
+  var dictPend = {}, dictFail = {};
+  function wordForms(w) {
+    var c = [w];
+    if (/\s/.test(w)) return c;
+    [[/ies$/, 'y'], [/ied$/, 'y'], [/ing$/, ''], [/ing$/, 'e'], [/ed$/, ''], [/ed$/, 'e'], [/es$/, ''], [/s$/, ''], [/ily$/, 'y'], [/ly$/, '']].forEach(function (r) {
+      if (r[0].test(w)) { var b = w.replace(r[0], r[1]); if (b.length > 2 && c.indexOf(b) < 0) c.push(b); }
+    });
+    return c;
+  }
+  function getJSON(url) {
+    return fetch(url).then(function (r) { if (r.status === 404) return null; if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  }
+  function fromDictApi(d, w) {
+    var e = d && d[0];
+    if (!e) return null;
+    var ph = e.phonetic || '', au = '', m = [];
+    (e.phonetics || []).forEach(function (p) { if (!ph && p.text) ph = p.text; if (!au && /^https:\/\//.test(p.audio || '')) au = p.audio; });
+    (e.meanings || []).forEach(function (mm) {
+      (mm.definitions || []).slice(0, 2).forEach(function (df) { if (m.length < 4 && df.definition) m.push([String(mm.partOfSpeech || ''), String(df.definition).slice(0, 300)]); });
+    });
+    return m.length ? { ph: String(ph).slice(0, 60), au: au, m: m, base: e.word && String(e.word).toLowerCase() !== w ? String(e.word) : '', src: 'Free Dictionary' } : null;
+  }
+  function htmlText(h) { return (new DOMParser().parseFromString('<div>' + (h || '') + '</div>', 'text/html').body.textContent || '').replace(/\s+/g, ' ').trim(); }
+  function fromWikt(d) {
+    var m = [];
+    ((d && d.en) || []).forEach(function (x) {
+      (x.definitions || []).slice(0, 2).forEach(function (df) { var t = htmlText(df.definition); if (m.length < 4 && t) m.push([String(x.partOfSpeech || '').toLowerCase(), t.slice(0, 300)]); });
+    });
+    return m.length ? { ph: '', au: '', m: m, base: '', src: 'Wiktionary' } : null;
+  }
+  var dictCbs = {};
+  function lookup(key, cb) {
+    if (cb) (dictCbs[key] = dictCbs[key] || []).push(cb);
+    if (dictPend[key]) return;
+    dictPend[key] = 1;
+    var forms = wordForms(key);
+    function end() { delete dictPend[key]; var cbs = dictCbs[key] || []; delete dictCbs[key]; refreshWord(key); cbs.forEach(function (f) { f(); }); }
+    function finish(v) { if (store.words[key]) { store.words[key].dict = v; save(); } end(); }
+    function tryDict(i, retried) {
+      if (i >= forms.length) { tryWikt(); return; }
+      getJSON(DICT + encodeURIComponent(forms[i])).then(function (d) {
+        var v = fromDictApi(d, key);
+        if (v) finish(v); else tryDict(i + 1, false);
+      }, function () { if (!retried) tryDict(i, true); else tryDict(i + 1, false); });
+    }
+    function tryWikt() {
+      getJSON(WIKT + encodeURIComponent(key)).then(function (d) { finish(fromWikt(d) || 0); }, function () { dictFail[key] = 1; end(); });
+    }
+    tryDict(0, false);
+  }
+  function prefetchDefs() {
+    if (ui.dictBusy || view !== 'home' || ui.tab !== 'words') return;
+    var next = wordEntries().list.filter(function (e) { return e.o.dict === undefined && !dictFail[e.key] && !dictPend[e.key]; })[0];
+    if (!next) return;
+    ui.dictBusy = true;
+    lookup(next.key, function () { ui.dictBusy = false; setTimeout(prefetchDefs, 150); });
+  }
+  function refreshWord(key) {
+    if (view !== 'home' || ui.tab !== 'words') return;
+    var d = document.getElementById('wDict');
+    if (d && ui.word === key) d.innerHTML = dictHtml(key);
+    var c = document.getElementById('wCards');
+    if (c) c.innerHTML = wordCards(wordEntries().list);
+  }
+  function wordEntries() {
+    var q = ui.wq.trim().toLowerCase();
+    var all = Object.keys(store.words).map(function (k) { return { key: k, o: store.words[k] }; });
+    var list = all.filter(function (e) { return ui.wf === 'all' || (ui.wf === 'ok' ? e.o.ok : !e.o.ok); })
+      .filter(function (e) { return !q || e.key.indexOf(q) >= 0 || (e.o.my || '').toLowerCase().indexOf(q) >= 0; });
+    list.sort(ui.wsort === 'abc' ? function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; } : function (a, b) { return (b.o.t || 0) - (a.o.t || 0); });
+    return { all: all, list: list };
+  }
+  function meanOf(o) { return o.my || (o.dict && o.dict.m && o.dict.m[0] ? o.dict.m[0][1] : ''); }
+  function ctxHtml(o) {
+    if (!o.ctx) return '';
+    return esc(o.ctx).replace(new RegExp('(^|[^' + LETTER + '])(' + escRe(esc(o.w)) + ')(?=[^' + LETTER + ']|$)', 'i'), '$1<b>$2</b>');
+  }
+  function wordCard(e) {
+    var o = e.o;
+    return '<button type="button" class="ncard wcard' + (ui.word === e.key ? ' on' : '') + '" data-a="wsel" data-v="' + esc(e.key) + '">' +
+      '<span class="nc-top"><b class="w-w">' + esc(o.w) + '</b>' + (o.ok ? '<span class="w-ok">외움</span>' : '') + '<span class="nc-w">' + (o.t ? dateStr(o.t) : '') + '</span></span>' +
+      '<span class="w-mean">' + esc(meanOf(o)) + '</span>' + (o.ctx ? '<span class="nc-snip">' + ctxHtml(o) + '</span>' : '') + '</button>';
+  }
+  function wordCards(list) { return list.length ? list.map(wordCard).join('') : '<p class="n-none">' + (ui.wq ? '찾는 단어가 없어요' : '이 조건에 맞는 단어가 없어요') + '</p>'; }
+  function dictHtml(key) {
+    var o = store.words[key];
+    if (!o) return '';
+    var naver = '<a class="w-link" href="https://en.dict.naver.com/#/search?query=' + encodeURIComponent(o.w) + '" target="_blank" rel="noopener">네이버 사전</a>';
+    if (o.dict === undefined) {
+      if (dictFail[key]) return '<p class="w-none">사전에 연결하지 못했어요. <button type="button" class="mini" data-a="wdict" data-v="' + esc(key) + '">다시 찾기</button> ' + naver + '</p>';
+      lookup(key);
+      return '<p class="w-none">찾는 중…</p>';
+    }
+    if (!o.dict) return '<p class="w-none">영영사전에서 못 찾았어요. ' + naver + '</p>';
+    var d = o.dict;
+    return (d.base ? '<p class="w-base">기본형 <b>' + esc(d.base) + '</b></p>' : '') +
+      '<ol class="w-defs">' + d.m.map(function (m) { return '<li><em>' + esc(m[0]) + '</em> ' + esc(m[1]) + '</li>'; }).join('') + '</ol>' +
+      '<p class="w-src"><span>' + esc(d.src || '') + '</span>' + naver + '</p>';
+  }
+  function wordDetail(key) {
+    var o = key && store.words[key];
+    if (!o) return '<p class="n-none">왼쪽 목록에서 단어를 고르세요</p>';
+    var ph = o.dict && o.dict.ph ? o.dict.ph : '';
+    var h = '<div class="d-top"><button type="button" class="d-back" data-a="wback">' + I.left + '목록</button>' +
+      '<div class="nd-title"><b class="w-big">' + esc(o.w) + '</b><span class="w-ph">' + esc(ph) +
+      (o.dict && o.dict.au ? '<button type="button" class="w-say" data-a="wsay" data-v="' + esc(key) + '" aria-label="발음 듣기">' + I.sound + '</button>' : '') + '</span></div>' +
+      '<div class="d-tools"><button type="button" class="kp kp-ok' + (o.ok ? ' on' : '') + '" data-a="wok" data-v="' + esc(key) + '" aria-pressed="' + !!o.ok + '">' + I.check + '<span>외움</span></button>' +
+      '<button type="button" class="kp" data-a="wdel" data-v="' + esc(key) + '">삭제</button></div></div>';
+    h += '<div class="d-sub first">내 뜻</div><input type="text" class="w-my" data-a="wmy" data-v="' + esc(key) + '" value="' + esc(o.my || '') + '" placeholder="한국어 뜻을 적어 두세요" autocomplete="off">';
+    h += '<div class="d-sub">영영 뜻</div><div id="wDict">' + dictHtml(key) + '</div>';
+    if (o.ctx) h += '<div class="d-sub">나온 문장</div><p class="w-ctx">' + ctxHtml(o) + '</p>';
+    if (o.ext) {
+      h += '<div class="d-line"><span class="n">' + (o.sk && SK[o.sk] ? esc(SK[o.sk].name) + ', ' : '') + (DIFF_EN[o.d] || '') + (o.qid ? ', ID ' + esc(o.qid) : '') + '</span>' +
+        '<button type="button" class="pill ghost" data-a="wq" data-v="' + esc(key) + '">이 문제 풀기</button></div>';
+    }
+    return h;
+  }
+  function wordsView() {
+    var r = wordEntries(), all = r.all, list = r.list;
+    if (!all.length) {
+      return { body: '<div class="panel n-empty"><b>아직 저장한 단어가 없어요</b><p>문제 화면 위쪽의 Words를 켜고 모르는 단어를 누르면 여기 모여요.</p><a class="pill" href="#">문제 풀러 가기</a></div>', bar: '' };
+    }
+    if (!ui.word && list.length && window.innerWidth > 760) ui.word = list[0].key;
+    var chips = '<div class="n-filters">' + WFILTERS.map(function (f) {
+      var c = all.filter(function (e) { return f[0] === 'all' || (f[0] === 'ok' ? e.o.ok : !e.o.ok); }).length;
+      return '<button type="button" class="chip' + (ui.wf === f[0] ? ' on' : '') + '" data-a="wf" data-v="' + f[0] + '">' + f[1] + '<b>' + c + '</b></button>';
+    }).join('') + '</div>';
+    var sort = '<div class="seg n-sort">' + [['recent', '최근순'], ['abc', 'ABC순']].map(function (o) {
+      return '<button type="button" class="' + (ui.wsort === o[0] ? 'on' : '') + '" data-a="wsort" data-v="' + o[0] + '">' + o[1] + '</button>';
+    }).join('') + '</div>';
+    var body = chips + '<div class="cfg notes' + (ui.wordOpen ? ' open' : '') + '"><div class="opt-list n-list">' +
+      '<div class="w-search"><input type="search" data-a="wsearch" value="' + esc(ui.wq) + '" placeholder="단어나 뜻으로 찾기" autocomplete="off" aria-label="단어 찾기"></div>' +
+      '<div class="n-listhead"><span id="wN">' + list.length + '단어</span>' + sort + '</div><div id="wCards">' + wordCards(list) + '</div></div>' +
+      '<section class="opt-detail n-detail" id="wDetail">' + wordDetail(ui.word) + '</section></div>';
+    var bar = list.length ? '<div class="startbar"><div class="startbar-in"><div class="sb-info"><b>' + list.length + '단어</b><span>' + esc(pick(WFILTERS, ui.wf)[1]) + '</span></div>' +
+      '<div class="sb-acts"><button type="button" class="pill" data-a="fcstart">카드로 외우기</button></div></div></div>' : '';
+    return { body: body, bar: bar };
+  }
+  // flashcards: tap to flip, 알아요 twice in a row marks a word 외움
+  function renderFc() {
+    var old = $('.fc-bg');
+    if (old) old.parentNode.removeChild(old);
+    var f = ui.fc;
+    if (!f) return;
+    var h;
+    if (f.i >= f.keys.length) {
+      h = '<div class="fc-end"><h3>다 봤어요</h3><p>알아요 ' + f.yes + ', 몰라요 ' + f.no + '</p><div class="acts">' +
+        (f.nos.length ? '<button class="bb-btn light" data-a="fcagain">몰라요만 다시 (' + f.nos.length + ')</button>' : '') + '<button class="bb-btn" data-a="fcclose">닫기</button></div></div>';
+    } else {
+      var o = store.words[f.keys[f.i]] || { w: f.keys[f.i] };
+      var back = '<span class="fc-my">' + esc(o.my || '') + '</span>' +
+        (o.dict && o.dict.m ? '<span class="fc-def">' + o.dict.m.slice(0, 2).map(function (m) { return '<i>' + esc(m[0]) + '</i> ' + esc(m[1]); }).join('<br>') + '</span>' : '') +
+        (o.ctx ? '<span class="fc-ctx">' + ctxHtml(o) + '</span>' : '');
+      h = '<div class="fc-top"><span>' + (f.i + 1) + ' / ' + f.keys.length + '</span><button class="bb-close" data-a="fcclose" aria-label="닫기">×</button></div>' +
+        '<button type="button" class="fc-card' + (f.flip ? ' flip' : '') + '" data-a="fcflip"><b class="fc-w">' + esc(o.w) + '</b>' +
+        (o.dict && o.dict.ph ? '<span class="fc-ph">' + esc(o.dict.ph) + '</span>' : '') + (f.flip ? back : '<span class="fc-tap">눌러서 뜻 보기</span>') + '</button>' +
+        '<div class="fc-acts"><button class="bb-btn light" data-a="fcno">몰라요</button><button class="bb-btn" data-a="fcyes">알아요</button></div>';
+    }
+    app.insertAdjacentHTML('beforeend', '<div class="fc-bg"><div class="fc" role="dialog" aria-modal="true" aria-label="단어 카드">' + h + '</div></div>');
+  }
+  function fcAnswer(yes) {
+    var f = ui.fc, key = f.keys[f.i], o = store.words[key];
+    if (o) {
+      if (yes) { o.k = (o.k || 0) + 1; if (o.k >= 2) o.ok = true; f.yes++; }
+      else { o.k = 0; o.ok = false; f.no++; f.nos.push(key); }
+      save();
+    }
+    f.i++; f.flip = false;
+    renderFc();
+  }
+
+  /* ───────── backup / restore (one JSON file with everything this page keeps) ───────── */
+  var BK_APP = 'sat-bluebook-practice', UUIDRE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, QIDRE = /^[0-9a-f]{8}$/i;
+  function dataCounts(s) {
+    var c = { solved: 0, wrong: 0, star: Object.keys(s.star || {}).length, flag: Object.keys(s.flag || {}).length, memo: Object.keys(s.memo || {}).length, words: Object.keys(s.words || {}).length, sessions: (s.sessions || []).length };
+    Object.keys(s.res || {}).forEach(function (k) { c.solved++; if (s.res[k] === 0) c.wrong++; });
+    return c;
+  }
+  function countsText(c) { return '푼 문제 ' + c.solved + ', 아직 틀림 ' + c.wrong + ', 별표 ' + c.star + ', 헷갈림 ' + c.flag + ', 메모 ' + c.memo + ', 단어 ' + c.words + ', 최근 기록 ' + c.sessions; }
+  function backupNow() {
+    var payload = { app: BK_APP, v: 1, at: new Date().toISOString(), data: { res: store.res, log: store.log, flag: store.flag, star: store.star, memo: store.memo, words: store.words, sessions: store.sessions, prefs: store.prefs } };
+    var url = URL.createObjectURL(new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'sat-bluebook-backup-' + today() + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.parentNode.removeChild(a); }, 1500);
+    store.lastBackup = Date.now();
+    save();
+    renderHome();
+    toast('백업 파일을 받았어요');
+  }
+  function str(v, n) { return typeof v === 'string' ? v.slice(0, n) : ''; }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }
+  function isObj(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+  function oneOf(list, v, dflt) { return list.some(function (x) { return x[0] === v; }) ? v : dflt; }
+  function cleanPrefs(p) {
+    if (!isObj(p)) return null;
+    var d = defaults(), out = defaults();
+    Object.keys(d).forEach(function (k) {
+      var v = p[k];
+      if (Array.isArray(d[k])) {
+        if (Array.isArray(v)) out[k] = v.filter(function (x) { return k === 'skills' ? !!SK[x] : k === 'diffs' ? !!DIFF_EN[x] : k === 'bands' ? BANDS.indexOf(x) >= 0 : typeof x === 'string' && /^\d{4}-\d{2}$/.test(x); });
+      } else if (typeof v === typeof d[k]) out[k] = v;
+    });
+    out.ev = oneOf(TESTS, out.ev, '99'); out.pool = oneOf(POOLS, out.pool, 'new'); out.order = oneOf(ORDERS, out.order, 'random');
+    out.timer = oneOf(TIMERS, out.timer, 'pace'); out.check = oneOf(CHECKS, out.check, 'end');
+    out.font = Math.max(0, Math.min(FONTS.length - 1, out.font | 0)); out.count = Math.max(1, out.count | 0); out.mins = Math.max(1, Math.min(180, out.mins | 0));
+    return out;
+  }
+  // everything from a file is checked field by field before it is used
+  function cleanBackup(o) {
+    if (!isObj(o) || o.app !== BK_APP || !isObj(o.data)) return null;
+    var d = o.data, out = { at: str(o.at, 40), res: {}, log: {}, flag: {}, star: {}, memo: {}, words: {}, sessions: [], prefs: cleanPrefs(d.prefs) };
+    if (isObj(d.res)) Object.keys(d.res).forEach(function (k) { if ((UUIDRE.test(k) || QIDRE.test(k)) && (d.res[k] === 0 || d.res[k] === 1)) out.res[k] = d.res[k]; });
+    if (isObj(d.log)) Object.keys(d.log).forEach(function (k) {
+      var v = d.log[k];
+      if (!UUIDRE.test(k) || !isObj(v) || !SK[v.sk]) return;
+      out.log[k] = {
+        id: QIDRE.test(v.id || '') ? v.id : '', sk: v.sk, d: DIFF_EN[v.d] ? v.d : 'M', ev: oneOf(TESTS, v.ev, '99'),
+        k: /^[A-D]$/.test(v.k || '') ? v.k : undefined, a: typeof v.a === 'string' && /^[A-D]?$/.test(v.a) ? v.a : undefined,
+        n: num(v.n), w: num(v.w), s: num(v.s), t: num(v.t), tw: num(v.tw)
+      };
+    });
+    ['flag', 'star'].forEach(function (f) { if (isObj(d[f])) Object.keys(d[f]).forEach(function (k) { if (UUIDRE.test(k) && d[f][k]) out[f][k] = 1; }); });
+    if (isObj(d.memo)) Object.keys(d.memo).forEach(function (k) { var m = str(d.memo[k], 5000); if (UUIDRE.test(k) && m.trim()) out.memo[k] = m; });
+    if (isObj(d.words)) Object.keys(d.words).slice(0, 5000).forEach(function (k) {
+      var v = d.words[k];
+      if (!isObj(v) || !k || k.length > 60) return;
+      var w = { w: str(v.w, 60) || k, t: num(v.t), my: str(v.my, 500), ok: !!v.ok, k: num(v.k), ctx: str(v.ctx, 400) };
+      if (UUIDRE.test(v.ext || '')) { w.ext = v.ext; w.qid = QIDRE.test(v.qid || '') ? v.qid : ''; w.sk = SK[v.sk] ? v.sk : undefined; w.d = DIFF_EN[v.d] ? v.d : undefined; }
+      if (v.dict === 0) w.dict = 0;
+      else if (isObj(v.dict) && Array.isArray(v.dict.m)) {
+        w.dict = {
+          ph: str(v.dict.ph, 60), au: /^https:\/\//.test(v.dict.au || '') ? str(v.dict.au, 300) : '', base: str(v.dict.base, 60), src: str(v.dict.src, 30),
+          m: v.dict.m.slice(0, 4).filter(Array.isArray).map(function (x) { return [str(x[0], 30), str(x[1], 400)]; })
+        };
+      }
+      out.words[k.toLowerCase()] = w;
+    });
+    if (Array.isArray(d.sessions)) out.sessions = d.sessions.filter(isObj).slice(0, 30).map(function (s) { return { at: num(s.at), n: num(s.n), ok: num(s.ok), label: str(s.label, 80), secs: num(s.secs) }; });
+    return out;
+  }
+  function restoreMerge(d) {
+    Object.keys(d.log).forEach(function (k) {
+      var a = store.log[k], b = d.log[k];
+      if (!a || b.t > (a.t || 0)) { store.log[k] = b; if (k in d.res) store.res[k] = d.res[k]; }   // the newer attempt wins
+    });
+    Object.keys(d.res).forEach(function (k) { if (!(k in store.res)) store.res[k] = d.res[k]; });
+    Object.keys(d.flag).forEach(function (k) { store.flag[k] = 1; });
+    Object.keys(d.star).forEach(function (k) { store.star[k] = 1; });
+    Object.keys(d.memo).forEach(function (k) {
+      var cur0 = store.memo[k];
+      store.memo[k] = !cur0 || cur0 === d.memo[k] ? d.memo[k] : cur0 + '\n' + d.memo[k];
+    });
+    Object.keys(d.words).forEach(function (k) {
+      var a = store.words[k], b = d.words[k];
+      if (!a) { store.words[k] = b; return; }
+      a.my = a.my || b.my; a.ok = a.ok || b.ok; a.ctx = a.ctx || b.ctx; a.t = Math.min(a.t || b.t, b.t || a.t);
+      if (a.dict === undefined) a.dict = b.dict;
+      if (!a.ext && b.ext) { a.ext = b.ext; a.qid = b.qid; a.sk = b.sk; a.d = b.d; }
+    });
+    var seen = {};
+    store.sessions = store.sessions.concat(d.sessions).filter(function (s) { if (seen[s.at]) return false; seen[s.at] = 1; return true; })
+      .sort(function (a, b) { return b.at - a.at; }).slice(0, 30);
+  }
+  function restoreReplace(d) {
+    store.res = d.res; store.log = d.log; store.flag = d.flag; store.star = d.star; store.memo = d.memo; store.words = d.words; store.sessions = d.sessions;
+    if (d.prefs) store.prefs = d.prefs;
+  }
+  var fileIn = document.createElement('input');
+  fileIn.type = 'file';
+  fileIn.accept = '.json,application/json';
+  fileIn.style.display = 'none';
+  document.body.appendChild(fileIn);
+  fileIn.addEventListener('change', function () {
+    var f = fileIn.files && fileIn.files[0];
+    fileIn.value = '';
+    if (!f) return;
+    if (f.size > 20e6) { modal('badfile'); return; }
+    var rd = new FileReader();
+    rd.onload = function () {
+      var d = null;
+      try { d = cleanBackup(JSON.parse(String(rd.result))); } catch (err) { d = null; }
+      if (!d) { modal('badfile'); return; }
+      ui.pending = d;
+      modal('restore', d);
+    };
+    rd.onerror = function () { modal('badfile'); };
+    rd.readAsText(f);
+  });
+  function finishRestore(replace) {
+    var d = ui.pending;
+    if (!d) return;
+    ui.pending = null;
+    if (replace) restoreReplace(d); else restoreMerge(d);
+    store.legacy = Object.keys(store.res).some(function (k) { return QIDRE.test(k); });
+    if (store.legacy && lists['99']) migrate(lists['99']);
+    wreSig = null;
+    save();
+    closeModal();
+    ui.note = null; ui.word = null;
+    showHome();
+    toast(replace ? '백업 파일로 바꿨어요' : '백업 파일을 합쳤어요');
+  }
+
   function showHome() {
     stopTimer(); S = null; view = 'home';
-    ui.tab = location.hash === '#notes' ? 'notes' : 'solve';
+    ui.tab = location.hash === '#notes' ? 'notes' : location.hash === '#words' ? 'words' : 'solve';
     document.title = 'Bluebook 연습 · 공식 문제';
     app.className = 'home';
     renderHome();
@@ -709,13 +1163,13 @@
     var ev = store.prefs.ev;
     loadList(ev).then(function () { if (view === 'home') renderHome(); }, function () { if (view === 'home' && store.prefs.ev === ev) renderHome(true); });
     // the notebook names older records' types from the SAT list (every PSAT question is in it)
-    if (ev !== '99') loadList('99').then(function () { if (view === 'home' && ui.tab === 'notes') renderHome(); }, function () {});
+    if (ev !== '99') loadList('99').then(function () { if (view === 'home' && ui.tab !== 'solve') renderHome(); }, function () {});
   }
   function renderHome(failed) {
     if (view !== 'home') return;
-    var p = store.prefs, ready = !!lists[p.ev], body, bar = '', notes = ui.tab === 'notes';
-    if (notes) {
-      var nv = notesView();
+    var p = store.prefs, ready = !!lists[p.ev], body, bar = '', notes = ui.tab === 'notes', words = ui.tab === 'words';
+    if (notes || words) {
+      var nv = notes ? notesView() : wordsView();
       body = nv.body; bar = nv.bar;
     } else if (!ready) body = failed ? failHtml() : '<div class="panel home-loading">' + esc(testName(p.ev)) + ' 문제 목록을 불러오는 중…</div>';
     else {
@@ -732,15 +1186,23 @@
         (n ? '<b>' + n + '문제</b>' + (tm ? '<span>' + tm + '</span>' : '') + '<span>' + esc(pick(CHECKS, p.check)[1]) + '</span>' : '<span>조건에 맞는 문제가 없어요</span>') +
         '</div><button type="button" class="pill" data-a="start"' + (n ? '' : ' disabled') + '>시작하기</button></div></div>';
     }
-    var y = window.scrollY, wrongN = nowCount();
-    var tabs = '<nav class="tabs" aria-label="화면"><a href="#" class="' + (notes ? '' : 'on') + '"' + (notes ? '' : ' aria-current="page"') + '>문제 풀기</a>' +
-      '<a href="#notes" class="' + (notes ? 'on' : '') + '"' + (notes ? ' aria-current="page"' : '') + '>오답노트' + (wrongN ? '<span class="cnt">' + wrongN + '</span>' : '') + '</a></nav>';
+    var y = window.scrollY, wrongN = nowCount(), learnN = Object.keys(store.words).filter(function (k) { return !store.words[k].ok; }).length;
+    var tab = function (href, id, label, badge) {
+      var on = ui.tab === id;
+      return '<a href="' + href + '" class="' + (on ? 'on' : '') + '"' + (on ? ' aria-current="page"' : '') + '>' + label + badge + '</a>';
+    };
+    var tabs = '<nav class="tabs" aria-label="화면">' + tab('#', 'solve', '문제 풀기', '') +
+      tab('#notes', 'notes', '오답노트', wrongN ? '<span class="cnt">' + wrongN + '</span>' : '') +
+      tab('#words', 'words', '단어장', learnN ? '<span class="cnt soft">' + learnN + '</span>' : '') +
+      '<button type="button" class="tab-bk" data-a="gobackup" title="백업과 복원">' + I.down2 + '<span>백업</span></button></nav>';
     app.innerHTML = '<header class="home-top"><a class="home-back" href="../">← SAT 그래머 스터디</a></header>' +
-      '<main class="setup"><div class="setup-h"><h1>Reading and Writing</h1>' + (ready && !notes ? '<span class="tot">' + esc(testName(p.ev)) + ' ' + nf(cur().length) + '문제</span>' : '') + '</div>' +
+      '<main class="setup"><div class="setup-h"><h1>Reading and Writing</h1>' + (ready && ui.tab === 'solve' ? '<span class="tot">' + esc(testName(p.ev)) + ' ' + nf(cur().length) + '문제</span>' : '') + '</div>' +
       tabs + body + '<p class="home-src">문제 출처: <a href="' + CB_SITE + '" target="_blank" rel="noopener">College Board SAT Suite Question Bank</a>. 문제는 열 때마다 College Board에서 불러오고 이 사이트에는 저장하지 않아요. ' +
       'College Board, Bluebook과 관계없는 개인 연습용 화면이에요.</p></main>' + bar;
     window.scrollTo(0, y);
-    if (notes) setTimeout(prefetchNotes, 0);
+    if (notes) { applyWordMarks(document.getElementById('nDetail')); setTimeout(prefetchNotes, 0); }
+    if (words) setTimeout(prefetchDefs, 0);
+    if (ui.fc) renderFc();
   }
 
   /* ───────── loading a set ───────── */
@@ -826,6 +1288,7 @@
         : '<div class="bb-time">' + fmt(S.tmode === 'up' ? elapsed() : S.left) + '</div><button class="bb-hide" data-a="hide">Hide</button>';
     }
     top += '</div><div class="bb-top-r">' +
+      (S.phase === 'check' ? '' : '<button class="bb-tool' + (S.wordMode ? ' on' : '') + '" data-a="wordmode" aria-pressed="' + !!S.wordMode + '" title="Tap a word you didn\'t know to save it">' + I.book + '<span>Words</span></button>') +
       (S.phase === 'check' ? '' : '<button class="bb-tool' + (S.annotate ? ' on' : '') + '" data-a="annotate" aria-pressed="' + S.annotate + '" title="Select passage text to highlight it">' + I.pen + '<span>Highlights &amp; Notes</span></button>') +
       '<button class="bb-tool" data-a="more" aria-expanded="' + S.more + '">' + I.dots + '<span>More</span></button></div></header><div class="dash"></div>';
 
@@ -901,7 +1364,8 @@
     }
     foot += '</footer>';
 
-    app.innerHTML = '<div class="bb' + (S.annotate ? ' annotate' : '') + '" style="--fs:' + FONTS[S.font][0] + 'px">' + top + pops + mid + foot + '</div>';
+    app.innerHTML = '<div class="bb' + (S.annotate ? ' annotate' : '') + (S.wordMode ? ' wordmode' : '') + '" style="--fs:' + FONTS[S.font][0] + 'px">' + top + pops + mid + foot + '</div>';
+    applyWordMarks(app);
     S._shown = S.i + ':' + S.phase;
     if (keep) {
       var l1 = $('.bb-left'), r1 = $('.bb-right'), m1 = $('.bb-main');
@@ -959,14 +1423,22 @@
   function modal(kind, arg) {
     var unanswered = S ? S.items.filter(function (x, j) { return !S.ans[j]; }).length : 0;
     var t, p, acts;
-    if (kind === 'pdf') { t = 'PDF로 저장'; p = arg + '문제를 인쇄 창으로 열어요. 대상에서 "PDF로 저장"을 고르세요.<br>문제지는 정답을 맨 뒤에 모아 둬요.'; acts = [['close', '취소', 'light'], ['pdfq', '문제지', 'light'], ['pdffull', '해설 포함', '']]; }
+    if (kind === 'restore') {
+      var at = arg.at && !isNaN(new Date(arg.at)) ? new Date(arg.at) : null;
+      t = '백업에서 복원할까요?';
+      p = (at ? at.getFullYear() + '-' + ('0' + (at.getMonth() + 1)).slice(-2) + '-' + ('0' + at.getDate()).slice(-2) + ' ' + timeStr(at) + ' 백업<br>' : '') + countsText(dataCounts(arg)) +
+        '<br><br><b>합치기</b>는 지금 기록에 더하고, <b>덮어쓰기</b>는 지금 기록을 지우고 파일 내용으로 바꿔요.';
+      acts = [['close', '취소', 'light'], ['rsmerge', '합치기', 'light'], ['rsreplace', '덮어쓰기', '']];
+    }
+    else if (kind === 'badfile') { t = '복원할 수 없는 파일이에요'; p = '이 페이지에서 받은 백업 파일(.json)을 골라 주세요.'; acts = [['close', '닫기', '']]; }
+    else if (kind === 'pdf') { t = 'PDF로 저장'; p = arg + '문제를 인쇄 창으로 열어요. 대상에서 "PDF로 저장"을 고르세요.<br>문제지는 정답을 맨 뒤에 모아 둬요.'; acts = [['close', '취소', 'light'], ['pdfq', '문제지', 'light'], ['pdffull', '해설 포함', '']]; }
     else if (kind === 'pdfwait') { t = 'PDF 준비 중'; p = 'College Board에서 문제를 불러오는 중 <span id="pdfc">0</span> / ' + arg; acts = []; }
     else if (kind === 'pdffail') { t = '문제를 불러오지 못했어요'; p = '잠시 뒤 다시 시도해 주세요.'; acts = [['close', '닫기', '']]; }
     else
     if (kind === 'timeup') { t = "Time's up"; p = '시간이 끝났어요. 실제 시험은 여기서 자동 제출돼요.'; acts = [['close', '계속 풀기', 'light'], ['dosubmit', '제출하기', '']]; }
     else if (kind === 'submit') { t = '제출할까요?'; p = '답하지 않은 문제가 ' + unanswered + '개 있어요. 답하지 않은 문제는 틀린 것으로 기록돼요.'; acts = [['close', '돌아가기', 'light'], ['dosubmit', '제출하기', '']]; }
     else if (kind === 'exit') { t = '연습을 그만둘까요?'; p = '지금까지 고른 답은 기록되지 않아요.'; acts = [['close', '계속 풀기', 'light'], ['home', '그만두기', '']]; }
-    else if (kind === 'clear') { t = '기록을 지울까요?'; p = '맞힌 문제, 틀린 문제, 리뷰 표시, 최근 기록이 모두 지워져요.'; acts = [['close', '취소', 'light'], ['doclear', '지우기', '']]; }
+    else if (kind === 'clear') { t = '기록을 지울까요?'; p = '푼 기록, 오답노트(별표, 헷갈림, 메모), 최근 기록이 모두 지워져요. 단어장은 그대로예요.<br>먼저 백업해 두면 나중에 되돌릴 수 있어요.'; acts = [['close', '취소', 'light'], ['doclear', '지우기', '']]; }
     else { t = 'Keyboard shortcuts'; p = 'A–D 또는 1–4: 보기 고르기<br>Enter: Check Answer (한 문제씩 채점일 때)<br>← →: 이전 / 다음 문제<br>Esc: 열린 창 닫기'; acts = [['close', '닫기', '']]; }
     closeModal();
     app.insertAdjacentHTML('beforeend', '<div class="bb-modal-bg"><div class="bb-modal" role="dialog" aria-modal="true"><h3>' + t + '</h3><p>' + p + '</p><div class="acts">' +
@@ -999,20 +1471,63 @@
       return true;
     }
     else if (a === 'nretry1') { var e1 = noteEntry(v); if (e1) startTest(noteItems([e1]), '오답노트 한 문제'); return true; }
+    else if (a === 'nword') {
+      ui.wordMode = !ui.wordMode;
+      if (ui.wordMode) toast('모르는 단어를 누르면 단어장에 저장돼요');
+      refreshDetail(ui.note);
+      return true;
+    }
     else if (a === 'pdfask') { modal('pdf', noteList().list.length); return true; }
     else if (a === 'pdfq' || a === 'pdffull') { closeModal(); makePdf(a === 'pdffull'); return true; }
     else return false;
     renderHome();
     return true;
   }
+  function wordsClick(a, v) {
+    var o = v != null ? store.words[v] : null;
+    if (a === 'wf') { ui.wf = v; ui.word = null; ui.wordOpen = false; }
+    else if (a === 'wsort') ui.wsort = v;
+    else if (a === 'wsel') { ui.word = v; ui.wordOpen = true; renderHome(); if (window.innerWidth <= 760) window.scrollTo(0, 0); return true; }
+    else if (a === 'wback') ui.wordOpen = false;
+    else if (a === 'wok') { if (o) { o.ok = !o.ok; o.k = o.ok ? 2 : 0; save(); } }
+    else if (a === 'wdel') { if (o) { delete store.words[v]; save(); toast('단어장에서 뺐어요: ' + o.w); ui.word = null; ui.wordOpen = false; } }
+    else if (a === 'wsay') { if (o && o.dict && o.dict.au) { try { new Audio(o.dict.au).play().catch(function () {}); } catch (err) { /* no audio */ } } return true; }
+    else if (a === 'wdict') { delete dictFail[v]; refreshWord(v); return true; }
+    else if (a === 'wq') {
+      if (!o || !o.ext) return true;
+      var x = findItem(o.ext) || (SK[o.sk] ? { id: o.qid || '', ext: o.ext, sk: o.sk, d: o.d || 'M', b: 0, t: '' } : null);
+      if (x) startTest([x], '단어장 문제'); else toast('문제 목록을 불러온 뒤 다시 눌러 주세요');
+      return true;
+    }
+    else if (a === 'fcstart') {
+      var keys = wordEntries().list.map(function (e) { return e.key; });
+      if (keys.length) { ui.fc = { keys: shuffle(keys), i: 0, flip: false, yes: 0, no: 0, nos: [] }; renderFc(); }
+      return true;
+    }
+    else if (a === 'fcflip') { if (ui.fc) { ui.fc.flip = !ui.fc.flip; renderFc(); } return true; }
+    else if (a === 'fcyes' || a === 'fcno') { if (ui.fc && ui.fc.i < ui.fc.keys.length) fcAnswer(a === 'fcyes'); return true; }
+    else if (a === 'fcagain') { var nos = ui.fc.nos; ui.fc = { keys: shuffle(nos.slice()), i: 0, flip: false, yes: 0, no: 0, nos: [] }; renderFc(); return true; }
+    else if (a === 'fcclose') { ui.fc = null; }
+    else return false;
+    renderHome();
+    return true;
+  }
   function homeClick(a, k, v) {
     var p = store.prefs;
-    if (notesClick(a, v)) return;
+    if (notesClick(a, v) || wordsClick(a, v)) return;
+    if (a === 'bkdown') { backupNow(); return; }
+    if (a === 'bkup') { fileIn.click(); return; }
+    if (a === 'rsmerge' || a === 'rsreplace') { finishRestore(a === 'rsreplace'); return; }
+    if (a === 'gobackup') {
+      ui.sel = 'backup'; ui.open = true;
+      if (ui.tab === 'solve') { renderHome(); window.scrollTo(0, 0); } else { ui.goBackup = true; location.hash = ''; }
+      return;
+    }
     if (a === 'sel') { ui.sel = v; ui.open = true; renderHome(); if (window.innerWidth <= 760) window.scrollTo(0, 0); return; }
     if (a === 'back') { ui.open = false; renderHome(); return; }
     if (a === 'close') { closeModal(); return; }
     if (a === 'clearask') { modal('clear'); return; }
-    if (a === 'doclear') { store.res = {}; store.flag = {}; store.sessions = []; save(); closeModal(); renderHome(); return; }
+    if (a === 'doclear') { store.res = {}; store.log = {}; store.flag = {}; store.star = {}; store.memo = {}; store.sessions = []; save(); closeModal(); renderHome(); return; }
     if (a === 'start') { save(); startTest(buildSet()); return; }
     if (a === 'idstart') { var f = findIds(ui.ids); if (f.items.length) startTest(f.items, testName(p.ev) + ', ID로 고른 문제'); return; }
     if (a === 'reload') { showHome(); return; }
@@ -1052,6 +1567,7 @@
 
   app.addEventListener('click', function (e) {
     if (e.target.classList && e.target.classList.contains('bb-modal-bg')) { closeModal(); return; }
+    if (wordActive() && !e.target.closest('.bb-modal-bg, .fc-bg') && pickWord(e)) return;
     var hl = e.target.closest('mark.hl');
     if (hl && S && S.annotate && !window.getSelection().toString()) { unwrap(hl); return; }   // tap a highlight to remove it
     var t = e.target.closest('[data-a]');
@@ -1083,11 +1599,15 @@
     else if (a === 'more') S.more = !S.more;
     else if (a === 'nav') S.nav = !S.nav;
     else if (a === 'hide') S.hide = !S.hide;
-    else if (a === 'annotate') S.annotate = !S.annotate;
+    else if (a === 'annotate') { S.annotate = !S.annotate; if (S.annotate) S.wordMode = false; }
+    else if (a === 'wordmode') {
+      S.wordMode = !S.wordMode;
+      if (S.wordMode) { S.annotate = false; toast('모르는 단어를 누르면 단어장에 저장돼요'); }
+    }
     else if (a === 'font') { S.font = Math.max(0, Math.min(FONTS.length - 1, S.font + (+v))); store.prefs.font = S.font; save(); }
     else if (a === 'info') { S.info = !S.info; store.prefs.info = S.info; save(); }
-    else if (a === 'keys') { modal('keys'); }
-    else if (a === 'exit') { if (S.phase === 'answers') { showHome(); return; } modal('exit'); }
+    else if (a === 'keys') { renderTest(); modal('keys'); return; }           // draw first so the dialog stays on screen
+    else if (a === 'exit') { if (S.phase === 'answers') { showHome(); return; } renderTest(); modal('exit'); return; }
     else if (a === 'results') { showResults(); return; }
     else if (a === 'mark') S.mark[S.i] = !S.mark[S.i];
     else if (a === 'elim') S.elimMode = !S.elimMode;
@@ -1133,7 +1653,20 @@
   var memoT = null;
   app.addEventListener('input', function (e) {
     if (view !== 'home') return;
-    if (e.target.getAttribute('data-a') === 'memo') {
+    var ia = e.target.getAttribute('data-a');
+    if (ia === 'wmy') {
+      var wk = e.target.getAttribute('data-v'), wo = store.words[wk];
+      if (wo) { wo.my = e.target.value.slice(0, 500); clearTimeout(memoT); memoT = setTimeout(save, 400); }
+      return;
+    }
+    if (ia === 'wsearch') {
+      ui.wq = e.target.value;
+      var wl = wordEntries().list, wc = $('#wCards'), wn = $('#wN');
+      if (wc) wc.innerHTML = wordCards(wl);
+      if (wn) wn.textContent = wl.length + '단어';
+      return;
+    }
+    if (ia === 'memo') {
       var me = e.target.getAttribute('data-v'), val = e.target.value;
       if (val.trim()) store.memo[me] = val; else delete store.memo[me];
       clearTimeout(memoT);
@@ -1154,7 +1687,7 @@
     while (m.firstChild) p.insertBefore(m.firstChild, m);
     p.removeChild(m);
     p.normalize();
-    var box = $('.bb-passage'); if (box && S) S.hl[S.i] = box.innerHTML;
+    var box = $('.bb-passage'); if (box && S) S.hl[S.i] = stripUw(box.innerHTML);
   }
   function highlightSelection() {
     if (!S || !S.annotate) return;
@@ -1166,7 +1699,7 @@
     mk.className = 'hl';
     try { r.surroundContents(mk); } catch (err) { mk.appendChild(r.extractContents()); r.insertNode(mk); }
     sel.removeAllRanges();
-    S.hl[S.i] = box.innerHTML;
+    S.hl[S.i] = stripUw(box.innerHTML);
   }
   app.addEventListener('mouseup', highlightSelection);
   app.addEventListener('touchend', function () { setTimeout(highlightSelection, 30); });
@@ -1188,6 +1721,11 @@
   });
 
   document.addEventListener('keydown', function (e) {
+    if (view === 'home' && ui.fc && !e.metaKey && !e.ctrlKey && !e.altKey) {   // flashcards: space flips, ← 몰라요, → 알아요
+      var fk = { ' ': 'fcflip', Enter: 'fcflip', ArrowLeft: 'fcno', ArrowRight: 'fcyes', Escape: 'fcclose' }[e.key];
+      if (fk && (fk === 'fcclose' || ui.fc.i < ui.fc.keys.length)) { e.preventDefault(); wordsClick(fk); }
+      return;
+    }
     if (!S || view !== 'test' || e.metaKey || e.ctrlKey || e.altKey) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;
     if (e.key === 'Escape') {
@@ -1205,7 +1743,8 @@
   // tabs (문제 풀기 / 오답노트) live in the address hash so the browser's back button and links work
   window.addEventListener('hashchange', function () {
     if (view !== 'home' && view !== 'result') return;
-    ui.open = false; ui.noteOpen = false;
+    if (ui.goBackup) { ui.goBackup = false; ui.sel = 'backup'; ui.open = true; } else ui.open = false;
+    ui.noteOpen = false; ui.wordOpen = false; ui.fc = null;
     showHome();
   });
 
