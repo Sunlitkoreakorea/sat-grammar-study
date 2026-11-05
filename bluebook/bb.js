@@ -33,7 +33,8 @@
   var DIFF_EN = { E: 'Easy', M: 'Medium', H: 'Hard' }, DIFF_KO = { E: '쉬움', M: '보통', H: '어려움' };
   var BANDS = [1, 2, 3, 4, 5, 6, 7];
   var FONTS = [[15, '작게'], [17, '보통'], [19, '크게'], [21, '아주 크게']];
-  var POOLS = [['new', '안 푼 문제 먼저'], ['unseen', '안 푼 문제만'], ['wrong', '틀린 문제만'], ['right', '맞힌 문제만'], ['flag', '리뷰 표시한 문제만'], ['any', '상관없이 무작위']];
+  var POOLS = [['new', '안 푼 문제 먼저'], ['unseen', '안 푼 문제만'], ['wrong', '틀린 문제만'], ['right', '맞힌 문제만'], ['star', '별표 문제만'], ['flag', '헷갈린 문제만'], ['any', '상관없이 무작위']];
+  var NFILTERS = [['now', '아직 틀림'], ['fixed', '다시 맞힘'], ['star', '별표'], ['flag', '헷갈림'], ['all', '전체']];
   var ORDERS = [['random', '무작위'], ['easy', '쉬운 문제부터'], ['hard', '어려운 문제부터'], ['test', '실제 시험 순서', '유형 순서대로, 같은 유형은 쉬운 문제부터']];
   var TIMERS = [['pace', '실제 시험 속도', '문제당 71초 (27문제 32분)'], ['custom', '직접 정하기'], ['up', '걸린 시간만 표시'], ['off', '끄기']];
   var CHECKS = [['end', '끝나고 한꺼번에', 'Bluebook처럼 제출한 뒤 채점'], ['instant', '한 문제씩 바로', '답을 고르고 Check Answer로 확인']];
@@ -66,12 +67,17 @@
       count: 10, order: 'random', timer: 'pace', mins: 32, auto: true, check: 'end', info: false, font: 1
     };
   }
-  var store = { v: 2, res: {}, flag: {}, sessions: [], prefs: defaults(), legacy: false };
+  // res: latest result per question (1/0), log: attempt history with ids/codes/letters only, flag: 헷갈림 (Mark for Review),
+  // star: 별표, memo: the user's own notes. No question text is ever saved.
+  var store = { v: 2, res: {}, log: {}, flag: {}, star: {}, memo: {}, sessions: [], prefs: defaults(), legacy: false };
   try {
     var raw = JSON.parse(localStorage.getItem(SKEY) || 'null');
     if (raw) {
       store.res = raw.res || {};
+      store.log = raw.log || {};
       store.flag = raw.flag || {};
+      store.star = raw.star || {};
+      store.memo = raw.memo || {};
       store.sessions = raw.sessions || [];
       if (raw.v === 2) {
         for (var k in (raw.prefs || {})) if (k in store.prefs) store.prefs[k] = raw.prefs[k];
@@ -88,6 +94,15 @@
     items.forEach(function (x) { if (x.id in store.res) { store.res[x.ext] = store.res[x.id]; delete store.res[x.id]; } });
     store.legacy = false;
     save();
+  }
+  // one answered question → latest result + attempt history (used by the 오답노트)
+  function recordAnswer(x, key, mine, ev) {
+    var good = mine === key;
+    store.res[x.ext] = good ? 1 : 0;
+    var L = store.log[x.ext] || (store.log[x.ext] = { n: 0, w: 0, s: 0 });
+    L.id = x.id; L.sk = x.sk; L.d = x.d; L.ev = ev; L.k = key; L.n++; L.t = Date.now();
+    if (good) L.s = (L.s || 0) + 1;
+    else { L.w++; L.s = 0; L.a = mine || ''; L.tw = L.t; }
   }
 
   /* ───────── College Board data ───────── */
@@ -217,15 +232,19 @@
     Array.prototype.forEach.call(d.querySelectorAll('.sr-only, svg, table, figure'), function (e) { e.parentNode.removeChild(e); });
     return d.textContent.replace(/\s+/g, ' ').trim();
   }
+  var qpend = {};
   function loadQ(ext) {
     if (qcache[ext]) return Promise.resolve(qcache[ext]);
-    return req('/digital/get-question', { external_id: ext }).then(function (d) {
+    if (qpend[ext]) return qpend[ext];
+    var p = req('/digital/get-question', { external_id: ext }).then(function (d) {
       var opts = (d.answerOptions || []).slice(0, 4), key = (d.correct_answer || [])[0];
       if (opts.length !== 4 || !/^[A-D]$/.test(key || '')) throw new Error('unexpected question format');
       var q = { stim: clean(d.stimulus), stem: clean(d.stem), key: key, why: clean(d.rationale), opts: opts.map(function (o) { return clean(o.content, true); }) };
       q.text = textOf(q.stim) || textOf(q.stem);
+      delete qpend[ext];
       return (qcache[ext] = q);
-    });
+    }, function (err) { delete qpend[ext]; throw err; });
+    return (qpend[ext] = p);
   }
   // load a whole set up front (4 at a time) so moving between questions never waits
   function fetchAll(items, onStep) {
@@ -263,12 +282,21 @@
     clock: '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
     grip: '<svg width="14" height="20" viewBox="0 0 14 20" aria-hidden="true"><path d="M5 4l-4 6 4 6M9 4l4 6-4 6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     check: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    minus: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>'
+    minus: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>',
+    star: '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4L2.8 9.5l6.4-.8z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>'
   };
+  function starBtn(ext, a) {
+    var on = !!store.star[ext];
+    return '<button type="button" class="kp kp-star' + (on ? ' on' : '') + '" data-a="' + a + '" data-v="' + ext + '" aria-pressed="' + on + '">' + I.star + '<span>별표</span></button>';
+  }
+  function confBtn(ext, a) {
+    var on = !!store.flag[ext];
+    return '<button type="button" class="kp kp-conf' + (on ? ' on' : '') + '" data-a="' + a + '" data-v="' + ext + '" aria-pressed="' + on + '">' + I.mark + '<span>헷갈림</span></button>';
+  }
 
   /* ───────── filtering ───────── */
   var view = 'home', S = null, timerId = null;
-  var ui = { sel: 'area', open: false, ids: '' };
+  var ui = { sel: 'area', open: false, ids: '', tab: 'solve', nf: 'now', nsk: '', nsort: 'recent', note: null, noteOpen: false, rev: {}, tried: {}, busy: false };
   function cur() { return lists[store.prefs.ev] || []; }
   // every filter except `skip`, so each option can show how many questions it would add
   function matcher(skip) {
@@ -290,6 +318,7 @@
     if (kind === 'wrong') return r === 0;
     if (kind === 'right') return r === 1;
     if (kind === 'flag') return !!store.flag[x.ext];
+    if (kind === 'star') return !!store.star[x.ext];
     return true;
   }
   function matching() { return cur().filter(matcher()); }
@@ -494,19 +523,201 @@
       '<a class="pill" style="display:inline-flex;align-items:center;text-decoration:none" href="' + CB_SITE + '" target="_blank" rel="noopener">공식 사이트에서 풀기</a></div></div>';
   }
 
+  /* ───────── 오답노트: wrong answers, stars and 헷갈림 in one place ───────── */
+  function findItem(ext) {
+    for (var ev in lists) {
+      var l = lists[ev];
+      if (!l._ix) { l._ix = {}; l.forEach(function (x) { l._ix[x.ext] = x; }); }
+      if (l._ix[ext]) return l._ix[ext];
+    }
+    return null;
+  }
+  function noteEntry(ext) {
+    var L = store.log[ext] || {}, x = findItem(ext), sk = L.sk || (x && x.sk);
+    if (!sk || !SK[sk]) return null;                      // older records wait until a list names their type
+    return {
+      ext: ext, id: L.id || (x && x.id) || '', sk: sk, d: L.d || (x && x.d) || 'M', ev: L.ev || '99',
+      n: L.n || 0, w: L.w || (store.res[ext] === 0 ? 1 : 0), s: L.s || 0, a: L.a, k: L.k || (qcache[ext] && qcache[ext].key),
+      t: L.tw || L.t || 0, res: store.res[ext], star: !!store.star[ext], flag: !!store.flag[ext], memo: store.memo[ext] || ''
+    };
+  }
+  function nMatch(f, e) {
+    if (f === 'now') return e.res === 0;
+    if (f === 'fixed') return e.res === 1 && e.w > 0;
+    if (f === 'star') return e.star;
+    if (f === 'flag') return e.flag;
+    return true;
+  }
+  function noteList() {
+    var keys = {};
+    Object.keys(store.res).forEach(function (k) { if (store.res[k] === 0) keys[k] = 1; });
+    Object.keys(store.log).forEach(function (k) { if (store.log[k].w) keys[k] = 1; });
+    Object.keys(store.star).forEach(function (k) { keys[k] = 1; });
+    Object.keys(store.flag).forEach(function (k) { keys[k] = 1; });
+    var all = Object.keys(keys).map(noteEntry).filter(Boolean);
+    var inF = all.filter(function (e) { return nMatch(ui.nf, e); });
+    var list = ui.nsk ? inF.filter(function (e) { return e.sk === ui.nsk; }) : inF.slice();
+    list.sort(ui.nsort === 'many' ? function (a, b) { return b.w - a.w || b.t - a.t; } : function (a, b) { return b.t - a.t; });
+    return { all: all, inF: inF, list: list };
+  }
+  function nowCount() { var n = 0; for (var k in store.res) if (store.res[k] === 0) n++; return n; }
+  function dateStr(t) { var d = new Date(t); return (d.getMonth() + 1) + '/' + d.getDate(); }
+  function today() { var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+  function noteCard(e) {
+    var q = qcache[e.ext];
+    var ans = e.res === 1 && e.w ? '<span class="nc-ok">다시 맞힘' + (e.s > 1 ? ' ' + e.s + '번 연속' : '') + '</span>'
+      : e.res === 0 && e.k ? (e.a !== undefined ? '<span class="nc-bad">' + (e.a ? '내 답 ' + e.a : '답 안 함') + '</span>' : '') + '<span>정답 ' + e.k + '</span>' : '<span></span>';
+    return '<button type="button" class="ncard' + (ui.note === e.ext ? ' on' : '') + '" data-a="nsel" data-v="' + e.ext + '">' +
+      '<span class="nc-top"><b>' + esc(SK[e.sk].name) + '</b><span class="nc-d">' + DIFF_EN[e.d] + '</span><span class="nc-ic">' +
+      (e.star ? '<i class="ic-star">★</i>' : '') + (e.flag ? I.flag : '') + (e.memo ? '<i class="ic-memo">메모</i>' : '') + '</span></span>' +
+      (q ? '<span class="nc-snip">' + esc(q.text.slice(0, 120)) + '</span>' : '') +
+      '<span class="nc-meta">' + ans + '<span class="nc-w">' + (e.w ? e.w + '번 틀림  ' : '') + (e.t ? dateStr(e.t) : '') + '</span></span></button>';
+  }
+  function cardsHtml(list) { return list.length ? list.map(noteCard).join('') : '<p class="n-none">이 조건에 맞는 문제가 없어요</p>'; }
+  // question snippets for the cards, fetched quietly a batch at a time
+  function prefetchNotes() {
+    if (ui.busy || view !== 'home' || ui.tab !== 'notes') return;
+    var todo = noteList().list.filter(function (e) { return !qcache[e.ext] && !ui.tried[e.ext]; }).slice(0, 30);
+    if (!todo.length) return;
+    ui.busy = true;
+    todo.forEach(function (e) { ui.tried[e.ext] = 1; });
+    fetchAll(todo, function () {}).then(function () {
+      ui.busy = false;
+      if (view !== 'home' || ui.tab !== 'notes') return;
+      var c = document.getElementById('nCards');
+      if (c) c.innerHTML = cardsHtml(noteList().list);
+      prefetchNotes();
+    });
+  }
+  function noteDetail(ext) {
+    var e = ext && noteEntry(ext);
+    if (!e) return '<p class="n-none">왼쪽 목록에서 문제를 고르세요</p>';
+    var q = qcache[ext];
+    var h = '<div class="d-top"><button type="button" class="d-back" data-a="nback">' + I.left + '목록</button>' +
+      '<div class="nd-title"><b>' + esc(SK[e.sk].name) + '</b><span>' + DIFF_EN[e.d] + (e.id ? '  ID ' + esc(e.id) : '') + '</span></div>' +
+      '<div class="d-tools">' + starBtn(ext, 'nstar') + confBtn(ext, 'nconf') + '</div></div>' +
+      '<p class="nd-hist">' + (e.n ? e.n + '번 풀어서 ' + e.w + '번 틀림' : e.w ? '틀린 문제' : '') +
+      (e.w && e.a !== undefined ? ', 마지막 오답 ' + (e.a || '답 안 함') : '') + (e.res === 1 && e.w ? ', 지금은 맞힘' : '') + '</p>';
+    if (!q) {
+      if (ui.tried[ext] === 2) return h + failHtml(false).replace('data-a="reload"', 'data-a="nload" data-v="' + ext + '"');
+      loadQ(ext).catch(function () { return loadQ(ext); }).then(function () { refreshDetail(ext); }, function () { ui.tried[ext] = 2; refreshDetail(ext); });
+      return h + '<div class="home-loading">문제를 불러오는 중…</div>';
+    }
+    var st = ui.rev[ext];
+    var choices = '<div class="bb-choices">' + q.opts.map(function (o, k) {
+      var L = 'ABCD'.charAt(k), cls = 'bb-choice', tag = '';
+      if (st) {
+        if (L === q.key) { cls += ' key'; tag = '<span class="bb-tag">' + (st.pick === L ? 'Your answer · Correct' : 'Correct answer') + '</span>'; }
+        else if (L === st.pick) { cls += ' miss'; tag = '<span class="bb-tag">Your answer</span>'; }
+      }
+      return '<div class="bb-ch-row"><button class="' + cls + '" data-a="ntry" data-v="' + L + '"' + (st ? ' disabled' : '') + '><span class="bb-letter">' + L + '</span><span class="bb-ch-text">' + o + '</span>' + tag + '</button></div>';
+    }).join('') + '</div>';
+    var after = st ? (st.pick ? '<div class="bb-verdict ' + (st.pick === q.key ? 'ok">맞았어요' : 'bad">틀렸어요. 정답은 ' + q.key) + '</div>' : '<div class="bb-verdict">정답은 ' + q.key + '</div>') +
+        '<div class="bb-why"><div class="bb-why-h">EXPLANATION</div>' + q.why + '</div>' +
+        '<div class="nd-reveal"><span></span><button type="button" class="mini" data-a="nhide">다시 가리기</button></div>'
+      : '<div class="nd-reveal"><span>답을 골라 다시 풀어 보세요</span><button type="button" class="mini" data-a="nreveal">정답 보기</button></div>';
+    return h + '<div class="nd-q" style="--fs:' + FONTS[store.prefs.font][0] + 'px">' + (q.stim ? '<div class="bb-passage">' + q.stim + '</div>' : '') +
+      '<div class="bb-stem">' + q.stem + '</div>' + choices + after + '</div>' +
+      '<div class="d-sub">메모</div><textarea class="nd-memo" data-a="memo" data-v="' + ext + '" placeholder="왜 틀렸는지, 다음에 확인할 것">' + esc(store.memo[ext] || '') + '</textarea>' +
+      '<div class="d-line"><span></span><button type="button" class="pill ghost" data-a="nretry1" data-v="' + ext + '">Bluebook 화면으로 풀기</button></div>';
+  }
+  function refreshDetail(ext) {
+    var d = document.getElementById('nDetail');
+    if (d && view === 'home' && ui.tab === 'notes' && ui.note === ext) d.innerHTML = noteDetail(ext);
+    var c = document.getElementById('nCards');
+    if (c && view === 'home' && ui.tab === 'notes') c.innerHTML = cardsHtml(noteList().list);
+  }
+  function notesView() {
+    var r = noteList(), all = r.all, list = r.list;
+    if (!all.length) {
+      return { body: '<div class="panel n-empty"><b>아직 모인 문제가 없어요</b><p>틀린 문제, 별표, 헷갈림(Mark for Review) 표시한 문제가 여기 모여요.</p><a class="pill" href="#">문제 풀러 가기</a></div>', bar: '' };
+    }
+    if (ui.nsk && !r.inF.some(function (e) { return e.sk === ui.nsk; })) { ui.nsk = ''; list = r.inF.slice(); }
+    if (!ui.note && list.length && window.innerWidth > 760) ui.note = list[0].ext;
+    var chips = '<div class="n-filters">' + NFILTERS.map(function (f) {
+      var c = all.filter(function (e) { return nMatch(f[0], e); }).length;
+      return '<button type="button" class="chip' + (ui.nf === f[0] ? ' on' : '') + '" data-a="nf" data-v="' + f[0] + '">' + (f[0] === 'star' ? '★ ' : '') + f[1] + '<b>' + c + '</b></button>';
+    }).join('') + '</div>';
+    var bySk = {};
+    r.inF.forEach(function (e) { bySk[e.sk] = (bySk[e.sk] || 0) + 1; });
+    var sks = Object.keys(bySk).sort(function (a, b) { return bySk[b] - bySk[a] || ORDER.indexOf(a) - ORDER.indexOf(b); });
+    var types = sks.length > 1 ? '<div class="n-types"><button type="button" class="tchip' + (!ui.nsk ? ' on' : '') + '" data-a="nsk" data-v="">전체 유형</button>' +
+      sks.map(function (c) { return '<button type="button" class="tchip' + (ui.nsk === c ? ' on' : '') + '" data-a="nsk" data-v="' + c + '">' + esc(SK[c].name) + '<b>' + bySk[c] + '</b></button>'; }).join('') + '</div>' : '';
+    var sort = '<div class="seg n-sort">' + [['recent', '최근순'], ['many', '많이 틀린 순']].map(function (o) {
+      return '<button type="button" class="' + (ui.nsort === o[0] ? 'on' : '') + '" data-a="nsort" data-v="' + o[0] + '">' + o[1] + '</button>';
+    }).join('') + '</div>';
+    var body = chips + types + '<div class="cfg notes' + (ui.noteOpen ? ' open' : '') + '"><div class="opt-list n-list"><div class="n-listhead"><span>' + list.length + '문제</span>' + sort + '</div>' +
+      '<div id="nCards">' + cardsHtml(list) + '</div></div><section class="opt-detail n-detail" id="nDetail">' + noteDetail(ui.note) + '</section></div>';
+    var label = pick(NFILTERS, ui.nf)[1] + (ui.nsk ? ', ' + SK[ui.nsk].name : '');
+    var bar = list.length ? '<div class="startbar"><div class="startbar-in"><div class="sb-info"><b>' + list.length + '문제</b><span>' + esc(label) + '</span></div>' +
+      '<div class="sb-acts"><button type="button" class="pill ghost" data-a="pdfask">PDF</button><button type="button" class="pill" data-a="nretry">다시 풀기</button></div></div></div>' : '';
+    return { body: body, bar: bar };
+  }
+  function noteItems(es) { return es.map(function (e) { var x = findItem(e.ext); return x || { id: e.id, ext: e.ext, sk: e.sk, d: e.d, b: 0, t: '' }; }); }
+
+  // PDF: the browser's print dialog ("PDF로 저장") prints a page built from the live questions
+  function printHtml(es, full) {
+    var label = pick(NFILTERS, ui.nf)[1] + (ui.nsk ? ', ' + SK[ui.nsk].name : '');
+    var h = '<header class="pr-h"><h1>SAT Reading and Writing 오답노트</h1><p>' + today() + '   ' + esc(label) + '   ' + es.length + '문제' + (full ? '' : '   (정답은 맨 뒤)') + '</p></header>';
+    h += es.map(function (e, i) {
+      var q = qcache[e.ext], mine = e.res === 0 ? e.a : undefined;
+      var ch = '<ol class="pr-ch">' + q.opts.map(function (o, k) {
+        var L = 'ABCD'.charAt(k), key = full && L === q.key, my = full && mine && L === mine;
+        return '<li class="' + (key ? 'key' : my ? 'my' : '') + '"><b>' + L + '</b><span>' + o + '</span>' +
+          (key ? '<em class="pr-mk ok">정답</em>' : my ? '<em class="pr-mk bad">내 답</em>' : '') + '</li>';
+      }).join('') + '</ol>';
+      var meta = [SK[e.sk].name, DIFF_EN[e.d]].concat(e.w ? [e.w + '번 틀림'] : [], e.star ? ['★'] : [], e.flag ? ['헷갈림'] : []).join(', ');
+      return '<section class="pr-q"><div class="pr-qh"><b>' + (i + 1) + '</b><span>' + esc(meta) + '</span><span class="pr-id">' + (e.id ? 'ID ' + esc(e.id) : '') + '</span></div>' +
+        (q.stim ? '<div class="pr-pass">' + q.stim + '</div>' : '') + '<div class="pr-stem">' + q.stem + '</div>' + ch +
+        (full ? '<div class="pr-why"><div class="pr-why-h">정답 ' + q.key + (mine !== undefined ? ', 내 답 ' + (mine || '없음') : '') + '</div>' + q.why + '</div>' +
+          (store.memo[e.ext] ? '<div class="pr-memo"><b>메모</b> ' + esc(store.memo[e.ext]) + '</div>' : '') : '') + '</section>';
+    }).join('');
+    if (!full) {
+      h += '<section class="pr-key"><h2>정답</h2><ol class="pr-keylist">' + es.map(function (e, i) {
+        var mine = e.res === 0 ? e.a : undefined;
+        return '<li><span>' + (i + 1) + '.</span> <b>' + qcache[e.ext].key + '</b>' + (mine !== undefined ? ' <small>(내 답 ' + (mine || '없음') + ')</small>' : '') + '</li>';
+      }).join('') + '</ol></section>';
+    }
+    return '<div class="pr">' + h + '<p class="pr-src">문제와 해설 출처: College Board SAT Suite Question Bank. 개인 학습용으로 인쇄한 자료예요.</p></div>';
+  }
+  function makePdf(full) {
+    var es = noteList().list;
+    if (!es.length) return;
+    modal('pdfwait', es.length);
+    fetchAll(es, function (d) { var c = $('#pdfc'); if (c) c.textContent = d; }).then(function (ready) {
+      closeModal();
+      var ok = es.filter(function (e) { return qcache[e.ext]; });
+      if (!ok.length) { modal('pdffail'); return; }
+      var box = document.getElementById('print');
+      if (!box) { box = document.createElement('div'); box.id = 'print'; document.body.appendChild(box); }
+      box.innerHTML = printHtml(ok, full);
+      var t0 = document.title;
+      document.title = 'SAT 오답노트 ' + today();
+      var done = function () { document.title = t0; window.removeEventListener('afterprint', done); };
+      window.addEventListener('afterprint', done);
+      setTimeout(function () { window.print(); setTimeout(done, 1500); }, 200);   // give charts and fonts a moment to lay out
+    });
+  }
+
   function showHome() {
     stopTimer(); S = null; view = 'home';
+    ui.tab = location.hash === '#notes' ? 'notes' : 'solve';
     document.title = 'Bluebook 연습 · 공식 문제';
     app.className = 'home';
     renderHome();
     window.scrollTo(0, 0);
     var ev = store.prefs.ev;
     loadList(ev).then(function () { if (view === 'home') renderHome(); }, function () { if (view === 'home' && store.prefs.ev === ev) renderHome(true); });
+    // the notebook names older records' types from the SAT list (every PSAT question is in it)
+    if (ev !== '99') loadList('99').then(function () { if (view === 'home' && ui.tab === 'notes') renderHome(); }, function () {});
   }
   function renderHome(failed) {
     if (view !== 'home') return;
-    var p = store.prefs, ready = !!lists[p.ev], body, bar = '';
-    if (!ready) body = failed ? failHtml() : '<div class="panel home-loading">' + esc(testName(p.ev)) + ' 문제 목록을 불러오는 중…</div>';
+    var p = store.prefs, ready = !!lists[p.ev], body, bar = '', notes = ui.tab === 'notes';
+    if (notes) {
+      var nv = notesView();
+      body = nv.body; bar = nv.bar;
+    } else if (!ready) body = failed ? failHtml() : '<div class="panel home-loading">' + esc(testName(p.ev)) + ' 문제 목록을 불러오는 중…</div>';
     else {
       var pool = poolItems(), n = Math.min(p.count, pool.length);
       var rows = ROWS.map(function (g) {
@@ -521,12 +732,15 @@
         (n ? '<b>' + n + '문제</b>' + (tm ? '<span>' + tm + '</span>' : '') + '<span>' + esc(pick(CHECKS, p.check)[1]) + '</span>' : '<span>조건에 맞는 문제가 없어요</span>') +
         '</div><button type="button" class="pill" data-a="start"' + (n ? '' : ' disabled') + '>시작하기</button></div></div>';
     }
-    var y = window.scrollY;
+    var y = window.scrollY, wrongN = nowCount();
+    var tabs = '<nav class="tabs" aria-label="화면"><a href="#" class="' + (notes ? '' : 'on') + '"' + (notes ? '' : ' aria-current="page"') + '>문제 풀기</a>' +
+      '<a href="#notes" class="' + (notes ? 'on' : '') + '"' + (notes ? ' aria-current="page"' : '') + '>오답노트' + (wrongN ? '<span class="cnt">' + wrongN + '</span>' : '') + '</a></nav>';
     app.innerHTML = '<header class="home-top"><a class="home-back" href="../">← SAT 그래머 스터디</a></header>' +
-      '<main class="setup"><div class="setup-h"><h1>Reading and Writing</h1>' + (ready ? '<span class="tot">' + esc(testName(p.ev)) + ' ' + nf(cur().length) + '문제</span>' : '') + '</div>' +
-      body + '<p class="home-src">문제 출처: <a href="' + CB_SITE + '" target="_blank" rel="noopener">College Board SAT Suite Question Bank</a>. 문제는 열 때마다 College Board에서 불러오고 이 사이트에는 저장하지 않아요. ' +
+      '<main class="setup"><div class="setup-h"><h1>Reading and Writing</h1>' + (ready && !notes ? '<span class="tot">' + esc(testName(p.ev)) + ' ' + nf(cur().length) + '문제</span>' : '') + '</div>' +
+      tabs + body + '<p class="home-src">문제 출처: <a href="' + CB_SITE + '" target="_blank" rel="noopener">College Board SAT Suite Question Bank</a>. 문제는 열 때마다 College Board에서 불러오고 이 사이트에는 저장하지 않아요. ' +
       'College Board, Bluebook과 관계없는 개인 연습용 화면이에요.</p></main>' + bar;
     window.scrollTo(0, y);
+    if (notes) setTimeout(prefetchNotes, 0);
   }
 
   /* ───────── loading a set ───────── */
@@ -548,7 +762,7 @@
       var mark = {};
       if (flagPool) ready.forEach(function (x, j) { if (store.flag[x.ext]) mark[j] = true; });
       S = {
-        items: ready, i: 0, ans: {}, mark: mark, elim: {}, hl: {}, checked: {}, phase: 'test',
+        items: ready, i: 0, ans: {}, mark: mark, elim: {}, hl: {}, checked: {}, rec: {}, ev: p.ev, phase: 'test',
         elimMode: false, annotate: false, nav: false, dir: false, more: false, hide: false,
         tmode: p.timer, left: p.timer === 'custom' ? p.mins * 60 : ready.length * SEC_PER_Q, auto: p.auto,
         instant: p.check === 'instant', info: p.info, font: p.font, flagPool: flagPool,
@@ -637,11 +851,12 @@
     } else {
       var showAns = graded(S.i), passage = q.stim ? (S.hl[S.i] || q.stim) : '';
       var tag = sk.name + ' · ' + DIFF_EN[x.d];
+      var keepTools = '<span class="bb-keep">' + starBtn(x.ext, 'star') + confBtn(x.ext, 'conf') + '</span>';
       var head = '<div class="bb-qhead"><span class="bb-qnum">' + (S.i + 1) + '</span>' +
-        (rev ? '<span class="bb-mark bb-info-rev">' + esc(tag) + '<small>ID ' + esc(x.id) + '</small></span>'
-          : '<button class="bb-mark' + (S.mark[S.i] ? ' on' : '') + '" data-a="mark" aria-pressed="' + !!S.mark[S.i] + '">' + I.mark + 'Mark for Review</button>' +
-            (S.info ? '<span class="bb-info">' + esc(tag) + '</span>' : '') +
-            (showAns ? '' : '<button class="bb-abc' + (S.elimMode ? ' on' : '') + '" data-a="elim" aria-pressed="' + S.elimMode + '" title="Cross out answer choices"><span>ABC</span></button>')) +
+        (rev ? '<span class="bb-mark bb-info-rev">' + esc(tag) + '<small>ID ' + esc(x.id) + '</small></span>' + keepTools
+          : (showAns ? '' : '<button class="bb-mark' + (S.mark[S.i] ? ' on' : '') + '" data-a="mark" aria-pressed="' + !!S.mark[S.i] + '">' + I.mark + 'Mark for Review</button>') +
+            (S.info || showAns ? '<span class="bb-info">' + esc(tag) + '</span>' : '') +
+            (showAns ? keepTools : '<button class="bb-abc' + (S.elimMode ? ' on' : '') + '" data-a="elim" aria-pressed="' + S.elimMode + '" title="Cross out answer choices"><span>ABC</span></button>')) +
         '</div>';
       var el = S.elim[S.i] || {}, mine = S.ans[S.i];
       var choices = '<div class="bb-choices">' + q.opts.map(function (o, k) {
@@ -697,14 +912,19 @@
   }
 
   /* ───────── results ───────── */
+  function record(j) {
+    if (S.rec[j]) return;
+    S.rec[j] = 1;
+    var x = S.items[j];
+    recordAnswer(x, qcache[x.ext].key, S.ans[j] || '', S.ev);
+  }
   function submit() {
     stopTimer();
     S.end = Date.now();
     var ok = 0;
     S.items.forEach(function (x, j) {
-      var good = S.ans[j] === qcache[x.ext].key;
-      if (good) ok++;
-      store.res[x.ext] = good ? 1 : 0;
+      if (S.ans[j] === qcache[x.ext].key) ok++;
+      record(j);
       if (S.mark[j]) store.flag[x.ext] = 1;
       else if (S.flagPool) delete store.flag[x.ext];
     });
@@ -724,21 +944,25 @@
       '<p class="res-sub">정답률 ' + Math.round(ok / n * 100) + '%, 걸린 시간 ' + fmt(elapsed()) + (S.dropped ? ', 불러오지 못한 ' + S.dropped + '문제는 빠졌어요' : '') + '</p>' +
       '<div class="res-acts"><button class="pill" data-a="open" data-v="0">해설 보기</button>' +
       (wrong ? '<button class="pill ghost" data-a="retrywrong">틀린 문제 다시 풀기 (' + wrong + ')</button>' : '') +
-      '<button class="pill ghost" data-a="again">같은 조건으로 새로 풀기</button><button class="pill ghost" data-a="home">처음 화면</button></div>' +
+      '<button class="pill ghost" data-a="notes">오답노트</button><button class="pill ghost" data-a="again">같은 조건으로 새로 풀기</button><button class="pill ghost" data-a="home">처음 화면</button></div>' +
       '<table class="res-table"><thead><tr><th>#</th><th></th><th>유형</th><th>난이도</th><th>정답</th><th>내 답</th><th>문제</th></tr></thead><tbody>' +
       S.items.map(function (x, j) {
         var q = qcache[x.ext], good = S.ans[j] === q.key;
         return '<tr class="row-link" data-a="open" data-v="' + j + '"><td>' + (j + 1) + '</td><td class="mk ' + (good ? 'ok' : 'bad') + '">' + (good ? '✓' : '✗') + '</td>' +
-          '<td class="sk">' + esc(SK[x.sk].name) + '</td><td>' + DIFF_KO[x.d] + '</td><td>' + q.key + '</td><td>' + (S.ans[j] || '–') + '</td>' +
+          '<td class="sk">' + esc(SK[x.sk].name) + (store.star[x.ext] ? ' <span class="r-star">★</span>' : '') + (store.flag[x.ext] ? ' ' + I.flag : '') + '</td><td>' + DIFF_KO[x.d] + '</td><td>' + q.key + '</td><td>' + (S.ans[j] || '–') + '</td>' +
           '<td class="ex">' + esc(q.text.slice(0, 90)) + '</td></tr>';
       }).join('') + '</tbody></table></main>';
     window.scrollTo(0, 0);
   }
 
   /* ───────── modal ───────── */
-  function modal(kind) {
+  function modal(kind, arg) {
     var unanswered = S ? S.items.filter(function (x, j) { return !S.ans[j]; }).length : 0;
     var t, p, acts;
+    if (kind === 'pdf') { t = 'PDF로 저장'; p = arg + '문제를 인쇄 창으로 열어요. 대상에서 "PDF로 저장"을 고르세요.<br>문제지는 정답을 맨 뒤에 모아 둬요.'; acts = [['close', '취소', 'light'], ['pdfq', '문제지', 'light'], ['pdffull', '해설 포함', '']]; }
+    else if (kind === 'pdfwait') { t = 'PDF 준비 중'; p = 'College Board에서 문제를 불러오는 중 <span id="pdfc">0</span> / ' + arg; acts = []; }
+    else if (kind === 'pdffail') { t = '문제를 불러오지 못했어요'; p = '잠시 뒤 다시 시도해 주세요.'; acts = [['close', '닫기', '']]; }
+    else
     if (kind === 'timeup') { t = "Time's up"; p = '시간이 끝났어요. 실제 시험은 여기서 자동 제출돼요.'; acts = [['close', '계속 풀기', 'light'], ['dosubmit', '제출하기', '']]; }
     else if (kind === 'submit') { t = '제출할까요?'; p = '답하지 않은 문제가 ' + unanswered + '개 있어요. 답하지 않은 문제는 틀린 것으로 기록돼요.'; acts = [['close', '돌아가기', 'light'], ['dosubmit', '제출하기', '']]; }
     else if (kind === 'exit') { t = '연습을 그만둘까요?'; p = '지금까지 고른 답은 기록되지 않아요.'; acts = [['close', '계속 풀기', 'light'], ['home', '그만두기', '']]; }
@@ -752,8 +976,38 @@
 
   /* ───────── events ───────── */
   function clampCount(v) { var mx = Math.max(1, poolItems().length); return Math.max(1, Math.min(mx, v | 0)); }
+  function notesClick(a, v) {
+    if (a === 'nf') { ui.nf = v; ui.nsk = ''; ui.note = null; ui.noteOpen = false; }
+    else if (a === 'nsk') { ui.nsk = v; ui.note = null; }
+    else if (a === 'nsort') ui.nsort = v;
+    else if (a === 'nsel') { ui.note = v; ui.noteOpen = true; renderHome(); if (window.innerWidth <= 760) window.scrollTo(0, 0); return true; }
+    else if (a === 'nback') ui.noteOpen = false;
+    else if (a === 'nstar' || a === 'nconf') { var m = a === 'nstar' ? store.star : store.flag; if (m[v]) delete m[v]; else m[v] = 1; save(); }
+    else if (a === 'ntry') {
+      var e = noteEntry(ui.note), q = qcache[ui.note];
+      if (!e || !q || ui.rev[ui.note]) return true;
+      recordAnswer(e, q.key, v, e.ev);                         // re-solving here counts as an attempt
+      ui.rev[ui.note] = { pick: v };
+      save();
+    }
+    else if (a === 'nreveal') { ui.rev[ui.note] = { pick: '' }; refreshDetail(ui.note); return true; }
+    else if (a === 'nhide') { delete ui.rev[ui.note]; refreshDetail(ui.note); return true; }
+    else if (a === 'nload') { ui.tried[v] = 1; refreshDetail(v); return true; }
+    else if (a === 'nretry') {
+      var L = noteList().list;
+      if (L.length) startTest(shuffle(noteItems(L)), '오답노트 ' + pick(NFILTERS, ui.nf)[1] + ' 다시 풀기');
+      return true;
+    }
+    else if (a === 'nretry1') { var e1 = noteEntry(v); if (e1) startTest(noteItems([e1]), '오답노트 한 문제'); return true; }
+    else if (a === 'pdfask') { modal('pdf', noteList().list.length); return true; }
+    else if (a === 'pdfq' || a === 'pdffull') { closeModal(); makePdf(a === 'pdffull'); return true; }
+    else return false;
+    renderHome();
+    return true;
+  }
   function homeClick(a, k, v) {
     var p = store.prefs;
+    if (notesClick(a, v)) return;
     if (a === 'sel') { ui.sel = v; ui.open = true; renderHome(); if (window.innerWidth <= 760) window.scrollTo(0, 0); return; }
     if (a === 'back') { ui.open = false; renderHome(); return; }
     if (a === 'close') { closeModal(); return; }
@@ -810,6 +1064,7 @@
       else if (a === 'retrywrong') startTest(S.items.filter(function (x, j) { return S.ans[j] !== qcache[x.ext].key; }), S.label.replace(/, 틀린 문제 다시$/, '') + ', 틀린 문제 다시');
       else if (a === 'again') startTest(buildSet());
       else if (a === 'home') showHome();
+      else if (a === 'notes') { ui.nf = 'now'; ui.nsk = ''; ui.note = null; ui.noteOpen = false; if (location.hash === '#notes') showHome(); else location.hash = 'notes'; }
       return;
     }
     if (a === 'home') { closeModal(); showHome(); return; }
@@ -839,7 +1094,20 @@
     else if (a === 'pick' && S.phase === 'test' && !locked) {
       S.ans[S.i] = v;
       if (S.elim[S.i]) delete S.elim[S.i][v];                     // choosing a crossed-out answer brings it back
-    } else if (a === 'checkone') { if (S.ans[S.i]) S.checked[S.i] = true; }
+    } else if (a === 'checkone') {
+      if (S.ans[S.i]) {
+        S.checked[S.i] = true;
+        record(S.i);
+        if (S.mark[S.i]) store.flag[S.items[S.i].ext] = 1;
+        save();
+      }
+    }
+    else if (a === 'star') { var e1 = S.items[S.i].ext; if (store.star[e1]) delete store.star[e1]; else store.star[e1] = 1; save(); }
+    else if (a === 'conf') {
+      var e2 = S.items[S.i].ext;
+      if (store.flag[e2]) { delete store.flag[e2]; S.mark[S.i] = false; } else { store.flag[e2] = 1; S.mark[S.i] = true; }
+      save();
+    }
     else if (a === 'elimone' && !locked) {
       (S.elim[S.i] = S.elim[S.i] || {})[v] = true;
       if (S.ans[S.i] === v) delete S.ans[S.i];
@@ -862,8 +1130,17 @@
     if (a === 'sw') { store.prefs[k] = e.target.checked; save(); renderHome(); }
     else if (a === 'num') { store.prefs.count = clampCount(+e.target.value || 1); save(); renderHome(); }
   });
+  var memoT = null;
   app.addEventListener('input', function (e) {
-    if (view !== 'home' || e.target.getAttribute('data-a') !== 'ids') return;
+    if (view !== 'home') return;
+    if (e.target.getAttribute('data-a') === 'memo') {
+      var me = e.target.getAttribute('data-v'), val = e.target.value;
+      if (val.trim()) store.memo[me] = val; else delete store.memo[me];
+      clearTimeout(memoT);
+      memoT = setTimeout(save, 400);
+      return;
+    }
+    if (e.target.getAttribute('data-a') !== 'ids') return;
     ui.ids = e.target.value;
     var f = findIds(ui.ids), nEl = $('#idsN'), b = $('[data-a="idstart"]'), row = $('.orow[data-v="ids"] .v');
     if (nEl) nEl.textContent = idsText(f);
@@ -923,6 +1200,13 @@
     else if (e.key === 'Enter' && S.phase === 'test') { var c = app.querySelector('[data-a="checkone"]'); if (c) { e.preventDefault(); c.click(); } }
     else if (e.key === 'ArrowRight' && S.phase !== 'check') { var n = app.querySelector('[data-a="next"]'); if (n) { e.preventDefault(); n.click(); } }
     else if (e.key === 'ArrowLeft') { var bk = app.querySelector('[data-a="back"]'); if (bk) { e.preventDefault(); bk.click(); } }
+  });
+
+  // tabs (문제 풀기 / 오답노트) live in the address hash so the browser's back button and links work
+  window.addEventListener('hashchange', function () {
+    if (view !== 'home' && view !== 'result') return;
+    ui.open = false; ui.noteOpen = false;
+    showHome();
   });
 
   window.addEventListener('beforeunload', function (e) {
