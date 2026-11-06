@@ -128,7 +128,6 @@
     h += '<ul class="nav-list">';
     h += '<li><a class="nav-item' + (activeId === 'home' ? ' active' : '') + '" href="#/"><span class="nav-badge">⌂</span><span class="nav-txt"><b>홈</b><small>전체 진행 현황</small></span></a></li>';
     h += '<li><a class="nav-item' + (activeId === 'practice' ? ' active' : '') + '" href="#/practice"><span class="nav-badge">✎</span><span class="nav-txt"><b>문제만 풀기</b><small>레슨별 문제 모음</small></span></a></li>';
-    h += '<li><a class="nav-item" href="bluebook/"><span class="nav-badge">CB</span><span class="nav-txt"><b>공식 문제</b><small>Bluebook 화면 · College Board 문제</small></span></a></li>';
     h += '<li><a class="nav-item' + (activeId === 'wrong' ? ' active' : '') + '" href="#/wrong"><span class="nav-badge">✗</span><span class="nav-txt"><b>오답노트</b><small>틀린 문제 모아 풀기</small></span>' +
       (wc ? '<span class="pill-count">' + wc + '</span>' : '') + '</a></li>';
     h += '<li class="nav-sep">Chapters</li>';
@@ -265,8 +264,6 @@
     }
     h += '<div class="card cont-card"><div><div class="ch-no">개념 없이 문제만</div><b>레슨별 문제만 바로 풀 수 있어요</b></div>' +
       '<a class="btn" href="#/practice">문제만 풀기 →</a></div>';
-    h += '<div class="card cont-card"><div><div class="ch-no">College Board</div><b>공식 문제은행 문제를 Bluebook 화면으로</b></div>' +
-      '<a class="btn" href="bluebook/">공식 문제 →</a></div>';
     h += '<h3 style="margin:22px 0 10px">챕터</h3><div class="grid">';
     chapters.forEach(function (ch) {
       var p = chProgress(ch);
